@@ -28,7 +28,7 @@ Long-form analysis: [`../analysis/saprot_vs_prott3_stage2_analysis.md`](../analy
 
 **Takeaway:** Q-Former protein–text alignment is the main driver of n-gram overlap (BLEU/ROUGE). Structure-aware SaProt adds a smaller but consistent gain over ESM-2 under the same BLIP-2 skeleton. Raw-AA LoRA and zero-shot Galactica are far weaker.
 
-## Stage 1 — retrieval (from manuscript)
+## Stage 1 — retrieval (from thesis Ch.5)
 
 Average of Acc / Rec@20 (in-batch + test, P→T and T→P) after PTM re-ranking (128 candidates):
 
@@ -40,4 +40,12 @@ Average of Acc / Rec@20 (in-batch + test, P→T and T→P) after PTM re-ranking 
 | ProstT5 1.5B | 90.03 |
 | **SaProt 650M** | **90.83** |
 
-Stage-1 PTM/LM loss ablations (`stage1sa_ablation_35m.sh`) were trained locally; full retrieval re-eval numbers are still pending for the w/o-PTM and w/o-LM variants.
+**SaProt-35M loss ablations:**
+
+| Variant | Average |
+|---------|--------:|
+| w/o PTM | 89.35 |
+| w/o PCap | 88.42 |
+| Full | **89.53** |
+
+Figures for the README: [`../docs/figures/`](../docs/figures/).
