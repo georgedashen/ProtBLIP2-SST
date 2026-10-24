@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Finetune on SwissProtV3 _afdbfilt, then evaluate the finetuned checkpoint on test.
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_OFFLINE=1

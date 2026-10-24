@@ -2,7 +2,8 @@
 # Eval-only for stage2 PLM ESM2 35M (_afdbfilt) with per-sample generation timeout.
 # Writes to a separate run dir so training/original lightning_logs are not overwritten.
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${HOME}:${PYTHONPATH:-}"
@@ -25,7 +26,7 @@ fi
 echo "========== eval stage2 PLM ESM2 35M (gentime pipeline) -> ${LOG} =========="
 echo "Checkpoint: ${FP32_CKPT}"
 echo "Output dir: all_checkpoints/${EVAL_FILENAME}/"
-python stage2_pLM.py \
+python ablations/stage2_pLM.py \
   --mode eval \
   --devices "${DEVICES:-0,1}" \
   --strategy deepspeed \

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Eval-only for stage2 PLM SaProt 35M (after training finished but caption eval crashed).
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${HOME}:${PYTHONPATH:-}"
@@ -20,7 +21,7 @@ if [[ ! -f "${FP32_CKPT}" ]]; then
 fi
 
 echo "========== eval stage2 PLM SaProt 35M -> ${LOG} =========="
-python stage2_pLM.py \
+python ablations/stage2_pLM.py \
   --mode eval \
   --devices "${DEVICES:-0,1}" \
   --strategy deepspeed \

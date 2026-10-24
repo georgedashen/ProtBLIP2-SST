@@ -2,7 +2,8 @@
 # Zero-shot eval: pretrained Galactica-1.3B on SwissProtV3 test (_afdbfilt).
 # Protein prefix uses [START_AMINO]/[END_AMINO] + char tokenization; LLM is frozen.
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 # Galactica is already cached locally; avoid flaky HEAD requests to huggingface.co
@@ -11,7 +12,7 @@ export TRANSFORMERS_OFFLINE=1
 
 FILENAME="${FILENAME:-stage2_aaraw_presuffix_galactica_zero_shot_afdbfilt_eval}"
 
-python stage2_AAraw_presuffix.py \
+python ablations/stage2_AAraw_presuffix.py \
   --mode eval \
   --devices '0,1' \
   --strategy deepspeed \

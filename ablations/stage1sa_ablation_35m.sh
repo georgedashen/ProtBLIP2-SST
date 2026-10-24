@@ -4,7 +4,8 @@
 #
 # Runs sequentially on 2 GPUs. Each job ~same cost as full stage1_sa 35M training.
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 

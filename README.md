@@ -23,15 +23,20 @@ Paper draft: [`paper/`](paper/) · conference write-up: [`manuscripts/conference
 ## Repository layout
 
 ```
-stage1.py / stage1sa.py / stage1pt5.py   # Stage-1 entry points (ESM / SaProt / ProstT5)
-stage2.py / stage2sa.py                   # Stage-2 captioning (ESM / SaProt)
-stage2_AAraw*.py / stage2_pLM*.py         # Stage-2 ablations (raw AA / unaligned PLM)
-model/                                    # Q-Former, OPT/Galactica heads, flash-attn helpers
-data_provider/                            # Dataloaders + optional PLM embed cache
-scripts/                                  # Eval / export / rescoring utilities
-results/                                  # Reported metrics + win-case TSVs
-analysis/                                 # Qualitative SaProt vs ESM write-up
-paper/                                    # IJCAI-style manuscript source
+# Main paper pipeline (repo root)
+stage1.py / stage1sa.py / stage1pt5.py    # Stage-1: ESM / SaProt / ProstT5
+stage2.py / stage2sa.py                    # Stage-2 captioning
+sa_run.sh / stage1_run.sh / stage2_sa_run.sh / pt5_*.sh / fa_run.sh
+convert.py / read_results.py
+model/                                     # Main Q-Former + encoder/decoder modules
+data_provider/                             # Main dataloaders + PLM embed cache
+
+# Supporting
+results/  analysis/  paper/  manuscripts/  scripts/
+
+# Moved out of the root
+ablations/   # AA-raw / unaligned-PLM / Stage-1 loss ablations (see ablations/README.md)
+extras/      # Legacy ProtT3 utilities (ProteinChat, ProtCLAP, …)
 ```
 
 Checkpoints and datasets stay local (`all_checkpoints/`, `data/`) and are gitignored.
@@ -134,7 +139,7 @@ python convert.py --input all_checkpoints/stage1_sa/epoch=49.ckpt \
 ### Stage-1 ablation (PTM / LM losses)
 
 ```bash
-bash stage1sa_ablation_35m.sh   # trains SaProt-35M w/o PTM and w/o LM
+bash ablations/stage1sa_ablation_35m.sh   # trains SaProt-35M w/o PTM and w/o LM
 ```
 
 ### Reported Stage-1 retrieval (average Acc / Rec@20)
@@ -203,14 +208,14 @@ JSON + win-case TSVs: [`results/`](results/).
 
 ## Stage-2 ablations (what we tested)
 
-These isolate **alignment** and **input format** at 35M scale (same Galactica + LoRA where applicable):
+Scripts live under [`ablations/`](ablations/). They isolate **alignment** and **input format** at 35M scale (same Galactica + LoRA where applicable):
 
 | Variant | Script | EM | BLEU-4 | ROUGE-L | METEOR |
 |---------|--------|---:|-------:|--------:|-------:|
-| No finetune (marker + AA, zero-shot) | `stage2aaraw_joint_summary_eval_afdbfilt.sh` | 0.00 | 0.58 | 6.20 | 5.11 |
-| LoRA on raw AA letters | `stage2aaraw_run.sh` | 24.43 | 37.15 | 53.05 | 57.40 |
-| LoRA on marker + AA | `stage2aaraw_presuffix_train.sh` | 24.22 | 36.97 | 53.01 | 57.16 |
-| Unaligned ESM-2 hidden states → LLM | `stage2plm_run.sh` / `stage2_pLM.py` | 30.92 | 43.66 | 62.91 | 64.51 |
+| No finetune (marker + AA, zero-shot) | `ablations/stage2aaraw_joint_summary_eval_afdbfilt.sh` | 0.00 | 0.58 | 6.20 | 5.11 |
+| LoRA on raw AA letters | `ablations/stage2aaraw_run.sh` | 24.43 | 37.15 | 53.05 | 57.40 |
+| LoRA on marker + AA | `ablations/stage2aaraw_presuffix_train.sh` | 24.22 | 36.97 | 53.01 | 57.16 |
+| Unaligned ESM-2 hidden states → LLM | `ablations/stage2plm_run.sh` | 30.92 | 43.66 | 62.91 | 64.51 |
 | ProtT3 / ESM-2 + 8 Q-Former queries | `stage2.py` | 30.33 | 54.74 | 64.29 | 65.99 |
 | **ProtBLIP2-SST / SaProt + 8 queries** | `stage2sa.py` | **30.59** | **55.37** | **65.26** | **66.62** |
 

@@ -7,7 +7,8 @@
 #   CKPT_DIR=all_checkpoints/stage2_aaraw_presuffix_afdbfilt DEEPSPEED_CKPT=epoch=09.ckpt \
 #     bash stage2aaraw_presuffix_eval_finetuned_afdbfilt.sh
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 CKPT_DIR="${CKPT_DIR:-all_checkpoints/stage2_aaraw_presuffix_afdbfilt}"
 DEEPSPEED_CKPT="${DEEPSPEED_CKPT:-last.ckpt}"
@@ -37,7 +38,7 @@ export TOKENIZERS_PARALLELISM=false
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-python stage2_AAraw_presuffix.py \
+python ablations/stage2_AAraw_presuffix.py \
   --mode eval \
   --devices '0,1' \
   --strategy deepspeed \

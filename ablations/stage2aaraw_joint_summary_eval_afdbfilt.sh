@@ -2,7 +2,8 @@
 # Zero-shot eval: Galactica joint prefix [START_AMINO]seq[END_AMINO] Summary Protein:
 # on SwissProtV3 test (_afdbfilt). LLM frozen (llm_tune=freeze).
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_OFFLINE=1
@@ -10,7 +11,7 @@ export TRANSFORMERS_OFFLINE=1
 
 FILENAME="${FILENAME:-stage2_aaraw_joint_summary_galactica_zero_shot_afdbfilt_eval}"
 
-python stage2_AAraw_joint.py \
+python ablations/stage2_AAraw_joint.py \
   --mode eval \
   --devices '0,1' \
   --strategy deepspeed \

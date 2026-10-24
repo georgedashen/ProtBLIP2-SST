@@ -8,7 +8,8 @@
 # Optional: load stage-1 SaProt weights (commented; ESM reference run did not use stage1).
 #   --stage1_path all_checkpoints/stage1_sa/SaProt_35M_fp32.ckpt
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${HOME}:${PYTHONPATH:-}"
@@ -19,7 +20,7 @@ PLM="../SaProt/weights/PLMs/SaProt_35M_AF2"
 LOG="${LOG:-stage2_plm_saprot_35m_saprot.log}"
 
 echo "========== stage2 PLM SaProt 35M (_saprot) -> ${LOG} =========="
-python stage2_pLM.py \
+python ablations/stage2_pLM.py \
   --devices "${DEVICES:-0,1}" \
   --mode train \
   --strategy deepspeed \

@@ -6,7 +6,8 @@
 #   Dataset: SwissProtV3 _saprot (same splits as stage2_plm_saprot_35m_saprot)
 #   Does not overwrite all_checkpoints/stage2_plm_saprot_35m_saprot/
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${HOME}:${PYTHONPATH:-}"
@@ -17,7 +18,7 @@ PLM="../SaProt/weights/PLMs/SaProt_35M_AF2"
 LOG="${LOG:-stage2_plm_saprot_35m_8tok.log}"
 
 echo "========== train stage2 PLM8 SaProt 35M (_saprot) -> ${LOG} =========="
-python stage2_pLM8.py \
+python ablations/stage2_pLM8.py \
   --devices "${DEVICES:-0,1}" \
   --mode train \
   --strategy deepspeed \

@@ -2,7 +2,8 @@
 # Train stage2 PLM ESM2 35M with L->8 prefix compression (no Q-Former).
 # Mirrors stage2plm_run.sh / stage2_reproduce.sh (35M _afdbfilt block).
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${HOME}:${PYTHONPATH:-}"
@@ -12,7 +13,7 @@ export TRANSFORMERS_OFFLINE=1
 LOG="${LOG:-stage2_plm_esm2_35m_8tok.log}"
 
 echo "========== train stage2 PLM8 ESM2 35M -> ${LOG} =========="
-python stage2_pLM8.py \
+python ablations/stage2_pLM8.py \
   --devices "${DEVICES:-0,1}" \
   --mode train \
   --strategy deepspeed \
