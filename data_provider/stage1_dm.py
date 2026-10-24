@@ -2,9 +2,17 @@
 # Licensed under the MIT License.
 from pytorch_lightning import LightningDataModule
 import json
+import torch
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
-import random
+import random, re
 from pathlib import Path
+
+from data_provider.plm_embed_cache import (
+    PlmEmbedCacheStore,
+    add_plm_cache_args,
+    prepare_plm_embed_caches,
+    preprocess_prot_seqs,
+)
 
 
 def rand_seq_crop(seq, max_len):
@@ -15,15 +23,26 @@ def rand_seq_crop(seq, max_len):
 
 
 class Stage1Collater(object):
-    def __init__(self, tokenizer, prot_tokenizer, text_max_len, prot_max_len, prot_aug='None'):
+    def __init__(
+        self,
+        tokenizer,
+        prot_tokenizer,
+        text_max_len,
+        prot_max_len,
+        prot_aug='None',
+        plm_name="Rostlab/prot_t5_xl_uniref50",
+        plm_cache=None,
+    ):
         self.tokenizer = tokenizer
         self.prot_tokenizer = prot_tokenizer
         self.text_max_len = text_max_len
         self.prot_max_len = prot_max_len
         self.prot_aug = prot_aug
+        self.plm_name = plm_name
+        self.plm_cache = plm_cache
     
     def __call__(self, batch):
-        prot_seqs, text_seqs, _ = zip(*batch)
+        prot_seqs, text_seqs, indices = zip(*batch)
         if self.prot_aug == 'rand_crop':
             prot_seqs = [rand_seq_crop(seq, self.prot_max_len-2) for seq in prot_seqs] # -2 for the two special tokens
         
@@ -35,6 +54,12 @@ class Stage1Collater(object):
                                      return_tensors='pt',
                                      return_attention_mask=True, 
                                      return_token_type_ids=False)
+        if self.plm_cache is not None:
+            # Keep cached embeddings on CPU in DataLoader workers (fork-safe).
+            prot_batch = self.plm_cache.get(indices)
+            return prot_batch, text_tokens
+
+        prot_seqs = preprocess_prot_seqs(prot_seqs, self.plm_name)
         prot_tokens = self.prot_tokenizer(prot_seqs,
                                           truncation=True,
                                           padding='max_length',
@@ -60,11 +85,11 @@ class Stage1DM(LightningDataModule):
         self.text_max_len = args.text_max_len
         self.prot_max_len = args.prot_max_len
         if root.find('SwissProt') >= 0:
-            self.train_dataset = SwissProtDataset(root+'/train_set.json')
-            self.val_dataset = SwissProtDataset(root+'/valid_set.json')
-            self.test_dataset = SwissProtDataset(root+'/test_set.json')
-            self.val_dataset_match = SwissProtDataset(root+'/valid_set.json').shuffle()
-            self.test_dataset_match = SwissProtDataset(root+'/test_set.json').shuffle()    
+            self.train_dataset = SwissProtDataset(root+f'/train_set{args.suffix}.json', test=args.test)
+            self.val_dataset = SwissProtDataset(root+f'/valid_set{args.suffix}.json', test=args.test)
+            self.test_dataset = SwissProtDataset(root+f'/test_set{args.suffix}.json', test=0)
+            self.val_dataset_match = SwissProtDataset(root+f'/valid_set{args.suffix}.json', test=args.test).shuffle()
+            self.test_dataset_match = SwissProtDataset(root+f'/test_set{args.suffix}.json', test=0).shuffle()
         elif root.find('PDBDataset') >= 0:
             self.train_dataset = PDBAbstractDataset(root, 'train.txt')
             self.val_dataset = PDBAbstractDataset(root, 'val.txt')
@@ -83,10 +108,46 @@ class Stage1DM(LightningDataModule):
         self.tokenizer = None
         self.prot_tokenizer = None
         self.prot_aug = args.prot_aug
+        self.plm_name = args.plm_name
+        self.args = args
+        self.plm_cache_store = PlmEmbedCacheStore()
+        self._is_saprot = False
 
     def init_tokenizer(self, tokenizer, prot_tokenizer):
         self.tokenizer = tokenizer
         self.prot_tokenizer = prot_tokenizer
+
+    def _stage1_collater(self, dataset):
+        cache = self.plm_cache_store.for_dataset(dataset)
+        return Stage1Collater(
+            self.tokenizer,
+            self.prot_tokenizer,
+            self.text_max_len,
+            self.prot_max_len,
+            self.prot_aug,
+            self.plm_name,
+            plm_cache=cache,
+        )
+
+    def _cache_dataset_pairs(self):
+        return [
+            (self.train_dataset, self.train_dataset.data_path),
+            (self.val_dataset, self.val_dataset.data_path),
+            (self.test_dataset, self.test_dataset.data_path),
+            (self.val_dataset_match, f"{self.val_dataset.data_path}:match"),
+            (self.test_dataset_match, f"{self.test_dataset.data_path}:match"),
+        ]
+
+    def prepare_plm_embed_cache(self, plm_module, is_saprot: bool = False):
+        self._is_saprot = is_saprot
+        prepare_plm_embed_caches(
+            self.plm_cache_store,
+            self._cache_dataset_pairs(),
+            plm_module,
+            self.prot_tokenizer,
+            self.args,
+            is_saprot=is_saprot,
+        )
 
     def train_dataloader(self):
         loader = DataLoader(
@@ -97,7 +158,7 @@ class Stage1DM(LightningDataModule):
             pin_memory=False,
             drop_last=True,
             # persistent_workers=True,
-            collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug)
+            collate_fn=self._stage1_collater(self.train_dataset)
         )
         return loader
 
@@ -110,7 +171,7 @@ class Stage1DM(LightningDataModule):
             pin_memory=False,
             drop_last=False,
             # persistent_workers=True,
-            collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug)
+            collate_fn=self._stage1_collater(self.val_dataset)
         )
         return loader
 
@@ -122,7 +183,7 @@ class Stage1DM(LightningDataModule):
                                       pin_memory=False, 
                                       drop_last=False, 
                                     #   persistent_workers=True,
-                                      collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                      collate_fn=self._stage1_collater(self.val_dataset_match))
         test_match_loader = DataLoader(self.test_dataset_match, 
                                        batch_size=self.match_batch_size,
                                        shuffle=False,
@@ -130,7 +191,7 @@ class Stage1DM(LightningDataModule):
                                        pin_memory=False, 
                                        drop_last=False, 
                                     #    persistent_workers=True,
-                                       collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                       collate_fn=self._stage1_collater(self.test_dataset_match))
         return val_match_loader, test_match_loader
 
     def add_model_specific_args(parent_parser):
@@ -142,6 +203,7 @@ class Stage1DM(LightningDataModule):
         parser.add_argument('--text_max_len', type=int, default=128)
         parser.add_argument('--prot_max_len', type=int, default=1024)
         parser.add_argument('--prot_aug', type=str, default='None')
+        add_plm_cache_args(parser)
         return parent_parser
     
 
@@ -177,10 +239,48 @@ class Stage1MixDM(LightningDataModule):
         self.tokenizer = None
         self.prot_tokenizer = None
         self.prot_aug = args.prot_aug
+        self.plm_name = args.plm_name
+        self.args = args
+        self.plm_cache_store = PlmEmbedCacheStore()
 
     def init_tokenizer(self, tokenizer, prot_tokenizer):
         self.tokenizer = tokenizer
         self.prot_tokenizer = prot_tokenizer
+
+    def _stage1_collater(self, dataset):
+        cache = self.plm_cache_store.for_dataset(dataset)
+        return Stage1Collater(
+            self.tokenizer,
+            self.prot_tokenizer,
+            self.text_max_len,
+            self.prot_max_len,
+            self.prot_aug,
+            self.plm_name,
+            plm_cache=cache,
+        )
+
+    def _cache_dataset_pairs(self):
+        return [
+            (self.train_dataset, "mix_train_concat"),
+            (self.swiss_val_dataset, self.swiss_val_dataset.data_path),
+            (self.onto_val_dataset, self.onto_val_dataset.data_path),
+            (self.swiss_test_dataset, self.swiss_test_dataset.data_path),
+            (self.onto_test_dataset, self.onto_test_dataset.data_path),
+            (self.swiss_val_dataset_match, f"{self.swiss_val_dataset.data_path}:match"),
+            (self.onto_val_dataset_match, f"{self.onto_val_dataset.data_path}:match"),
+            (self.swiss_test_dataset_match, f"{self.swiss_test_dataset.data_path}:match"),
+            (self.onto_test_dataset_match, f"{self.onto_test_dataset.data_path}:match"),
+        ]
+
+    def prepare_plm_embed_cache(self, plm_module, is_saprot: bool = False):
+        prepare_plm_embed_caches(
+            self.plm_cache_store,
+            self._cache_dataset_pairs(),
+            plm_module,
+            self.prot_tokenizer,
+            self.args,
+            is_saprot=is_saprot,
+        )
 
     def train_dataloader(self):
         loader = DataLoader(
@@ -188,9 +288,11 @@ class Stage1MixDM(LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            pin_memory=False,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
             drop_last=True,
-            collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug)
+            collate_fn=self._stage1_collater(self.train_dataset)
         )
         return loader
 
@@ -200,18 +302,22 @@ class Stage1MixDM(LightningDataModule):
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=False,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
             drop_last=False,
-            collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug)
+            collate_fn=self._stage1_collater(self.swiss_val_dataset)
         )
         loader2 = DataLoader(
             self.onto_val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=False,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
             drop_last=False,
-            collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug)
+            collate_fn=self._stage1_collater(self.onto_val_dataset)
         )
         return [loader1, loader2]
 
@@ -219,34 +325,42 @@ class Stage1MixDM(LightningDataModule):
         val_match_loader = DataLoader(self.swiss_val_dataset_match,
                                       batch_size=self.match_batch_size,
                                       shuffle=False,
-                                      num_workers=self.num_workers, 
-                                      pin_memory=False, 
-                                      drop_last=False, 
-                                      collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                      num_workers=self.num_workers,
+                                      pin_memory=True,
+                                      persistent_workers=True,
+                                      prefetch_factor=4,
+                                      drop_last=False,
+                                      collate_fn=self._stage1_collater(self.swiss_val_dataset_match))
         test_match_loader = DataLoader(self.swiss_test_dataset_match, 
                                        batch_size=self.match_batch_size,
                                        shuffle=False,
-                                       num_workers=self.num_workers, 
-                                       pin_memory=False, 
-                                       drop_last=False, 
-                                       collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                       num_workers=self.num_workers,
+                                       pin_memory=True,
+                                       persistent_workers=True,
+                                       prefetch_factor=4,
+                                       drop_last=False,
+                                       collate_fn=self._stage1_collater(self.swiss_test_dataset_match))
         return val_match_loader, test_match_loader
     
     def onto_match_dataloader(self):
         val_match_loader = DataLoader(self.onto_val_dataset_match,
                                       batch_size=self.match_batch_size,
                                       shuffle=False,
-                                      num_workers=self.num_workers, 
-                                      pin_memory=False, 
-                                      drop_last=False, 
-                                      collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                      num_workers=self.num_workers,
+                                      pin_memory=True,
+                                      persistent_workers=True,
+                                      prefetch_factor=4,
+                                      drop_last=False,
+                                      collate_fn=self._stage1_collater(self.onto_val_dataset_match))
         test_match_loader = DataLoader(self.onto_test_dataset_match, 
                                        batch_size=self.match_batch_size,
                                        shuffle=False,
-                                       num_workers=self.num_workers, 
-                                       pin_memory=False, 
-                                       drop_last=False, 
-                                       collate_fn=Stage1Collater(self.tokenizer, self.prot_tokenizer, self.text_max_len, self.prot_max_len, self.prot_aug))
+                                       num_workers=self.num_workers,
+                                       pin_memory=True,
+                                       persistent_workers=True,
+                                       prefetch_factor=4,
+                                       drop_last=False,
+                                       collate_fn=self._stage1_collater(self.onto_test_dataset_match))
         return val_match_loader, test_match_loader
 
     
@@ -259,11 +373,12 @@ class Stage1MixDM(LightningDataModule):
         parser.add_argument('--text_max_len', type=int, default=128)
         parser.add_argument('--prot_max_len', type=int, default=1024)
         parser.add_argument('--prot_aug', type=str, default='None')
+        add_plm_cache_args(parser)
         return parent_parser
 
 
 class SwissProtDataset(Dataset):
-    def __init__(self, data_path, prompt='Swiss-Prot description: ', return_prompt=False):
+    def __init__(self, data_path, prompt='Swiss-Prot description: ', return_prompt=False, test=0):
         super(SwissProtDataset, self).__init__()
         self.data_path = data_path
 
@@ -275,6 +390,8 @@ class SwissProtDataset(Dataset):
 
         ## preprocessing
         self.data_list = [(p, t.strip() + '\n') for p, t in self.data_list]
+        if test > 0:
+            self.data_list = self.data_list[:test]
 
         self.text2id = {}
         for prot_seq, text_seq in self.data_list:
@@ -345,8 +462,8 @@ class PDBAbstractDataset(Dataset):
     def __getitem__(self, index):
         seq, abstract = self.data_list[index]
         if self.return_prompt:
-            return seq, self.prompt, abstract
-        return seq, abstract
+            return seq, self.prompt, abstract, index
+        return seq, abstract, index
     
 
 class OntoProteinDataset(Dataset):
@@ -378,14 +495,14 @@ class OntoProteinDataset(Dataset):
     def __getitem__(self, index):
         prot_seq, text_seq = self.data_list[index]
         if self.return_prompt:
-            return prot_seq, self.prompt, text_seq
-        return prot_seq, text_seq
+            return prot_seq, self.prompt, text_seq, index
+        return prot_seq, text_seq, index
 
 
 if __name__ == '__main__':
     import numpy as np
     ## get statistics for swiss prot dataset
-    if False:
+    if True:
         swiss_train = SwissProtDataset('../data/SwissProtV3/train_set.json')
         swiss_valid = SwissProtDataset('../data/SwissProtV3/valid_set.json')
         swiss_test = SwissProtDataset('../data/SwissProtV3/test_set.json')

@@ -8,11 +8,25 @@ import json
 import torch.distributed as dist
 # from peft import LoraConfig, TaskType
 from typing import Any, Dict
-from model.help_funcs import caption_evaluate, AttrDict
+from model.help_funcs import caption_evaluate, flatten_caption_field, AttrDict
 try:
     from model.opt_flash_attention import replace_opt_attn_with_flash_attn, replace_opt_attn_with_original_attn
 except ModuleNotFoundError:
     pass
+
+
+def _resolve_log_dir(trainer, logger):
+    loggers = getattr(trainer, "loggers", None) if trainer else None
+    if loggers:
+        for lg in loggers:
+            if lg.__class__.__name__ == "CSVLogger" and getattr(lg, "log_dir", None):
+                return lg.log_dir
+        for lg in loggers:
+            if getattr(lg, "log_dir", None):
+                return lg.log_dir
+    if getattr(logger, "log_dir", None):
+        return logger.log_dir
+    raise RuntimeError("No logger log_dir available for writing predictions")
 
 
 def get_module_state_dict(state_dict, module_name):
@@ -67,9 +81,14 @@ class Blip2Stage2(pl.LightningModule):
 
     def load_from_stage1_checkpoint(self, path):
         ckpt = torch.load(path, map_location='cpu')
-        state_dict = ckpt['state_dict']
-        state_dict = {k.split('blip2qformer.')[1]:v for k, v in state_dict.items()}
-        self.blip2.load_state_dict(state_dict, strict=False)
+        state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+        remapped = {}
+        for k, v in state_dict.items():
+            if 'blip2qformer.' in k:
+                remapped[k.split('blip2qformer.', 1)[1]] = v
+            elif k.startswith('blip2.'):
+                remapped[k.split('blip2.', 1)[1]] = v
+        self.blip2.load_state_dict(remapped, strict=False)
         return self
     
     def configure_optimizers(self):
@@ -92,7 +111,8 @@ class Blip2Stage2(pl.LightningModule):
             name = f'{log_prefix}_predictions.txt'
         else:
             name = 'predictions.txt'
-        with open(os.path.join(self.logger.log_dir, name), 'w', encoding='utf8') as f:
+        log_dir = _resolve_log_dir(self.trainer, self.logger)
+        with open(os.path.join(log_dir, name), 'w', encoding='utf8') as f:
             if q_types is not None:
                 for p, t, q in zip(predictions, targets, q_types):
                     line = {'prediction': p, 'target': t, 'q_type': q}
@@ -136,9 +156,12 @@ class Blip2Stage2(pl.LightningModule):
             self.saved_dict_list.append(target_dict)
 
     def gather_dict_results(self, dict_list):
-        list_of_dict_list = [None for _ in range(self.trainer.world_size)]
-        dist.all_gather_object(list_of_dict_list, dict_list)
-        dict_list = [i for ii in list_of_dict_list for i in ii] ## dict list, each dict has values that are lists of predictions, etc.
+        if dist.is_available() and dist.is_initialized():
+            list_of_dict_list = [None for _ in range(self.trainer.world_size)]
+            dist.all_gather_object(list_of_dict_list, dict_list)
+            dict_list = [i for ii in list_of_dict_list for i in ii]
+        else:
+            dict_list = list(dict_list)
         keys = dict_list[0].keys()
         gathered_dict = {} # each value is a list of predictions, etc.
         for key in keys:
@@ -155,7 +178,8 @@ class Blip2Stage2(pl.LightningModule):
             name = f'{log_prefix}_predictions.txt'
         else:
             name = 'predictions.txt'
-        with open(os.path.join(self.logger.log_dir, name), 'w', encoding='utf8') as f:
+        log_dir = _resolve_log_dir(self.trainer, self.logger)
+        with open(os.path.join(log_dir, name), 'w', encoding='utf8') as f:
             for d in dict_list:
                 f.write(json.dumps(d, ensure_ascii=True) + '\n')
 
@@ -164,16 +188,18 @@ class Blip2Stage2(pl.LightningModule):
             replace_opt_attn_with_flash_attn()
         if (self.current_epoch+1) % self.caption_eval_epoch != 0:
             return 
+        if not self.saved_dict_list:
+            return
         result_list = self.gather_dict_results(self.saved_dict_list)
         ## empty cache
         self.saved_dict_list = []
         
         if self.global_rank == 0:
             self.save_results(result_list, 'dataset0')
-            all_predictions = [i['predictions'] for i in result_list]
-            all_targets = [i['targets'] for i in result_list]
+            all_predictions = flatten_caption_field(result_list, 'predictions')
+            all_targets = flatten_caption_field(result_list, 'targets')
             
-            log_prefix = 'dataset0' ## fixme: this is just a placeholder
+            log_prefix = 'dataset0'
             if 'q_types' in result_list[0]:
                 ## evaluate protein qa
                 pass

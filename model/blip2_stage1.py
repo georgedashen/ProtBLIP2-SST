@@ -6,6 +6,7 @@ from torch import optim
 from lavis.common.optims import LinearWarmupCosineLRScheduler, LinearWarmupStepLRScheduler
 from tqdm import tqdm
 from model.help_funcs import AttrDict, pad_and_concat
+from model.plm_encode import batch_size_of
 from typing import Any, Dict
 
 
@@ -60,7 +61,7 @@ class Blip2Stage1(pl.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         prot_batch, text_batch = batch
-        batch_size = prot_batch.input_ids.shape[0]
+        batch_size = batch_size_of(prot_batch)
         blip2_loss = self.blip2qformer(batch)
         ###============== Overall Loss ===================###
         self.log(f"loader{dataloader_idx}/val_loss_ptc", float(blip2_loss.loss_itc), batch_size=batch_size, sync_dist=True)
@@ -180,7 +181,7 @@ class Blip2Stage1(pl.LightningModule):
         self.scheduler.step(self.trainer.current_epoch, self.trainer.global_step)
 
         prot_batch, text_batch = batch
-        batch_size = prot_batch.input_ids.shape[0]
+        batch_size = batch_size_of(prot_batch)
         blip2_loss = self.blip2qformer(batch)
         ###============== Overall Loss ===================###
         self.log("train_loss_ptc", float(blip2_loss.loss_itc), batch_size=batch_size, sync_dist=True)
@@ -210,7 +211,8 @@ class Blip2Stage1(pl.LightningModule):
         
         # Bert
         parser.add_argument('--bert_hidden_dim', type=int, default=768, help='')
-        parser.add_argument('--bert_name', type=str, default='microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract')
+        #parser.add_argument('--bert_name', type=str, default='microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract')
+        parser.add_argument('--bert_name', type=str, default='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract')
         parser.add_argument('--projection_dim', type=int, default=256)
         parser.add_argument('--cross_attention_freq', type=int, default=2)
         parser.add_argument('--num_query_token', type=int, default=8)

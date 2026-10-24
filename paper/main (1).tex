@@ -1,0 +1,708 @@
+%%%% ijcai26.tex
+
+\typeout{IJCAI--ECAI 26 Instructions for Authors}
+
+% These are the instructions for authors for IJCAI--ECAI 26.
+
+\documentclass{article}
+\pdfpagewidth=8.5in
+\pdfpageheight=11in
+
+% The file ijcai26.sty is a copy from ijcai22.sty
+% The file ijcai22.sty is NOT the same as previous years'
+\usepackage{ijcai26}
+
+% Use the postscript times font!
+\usepackage{times}
+\usepackage{soul}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage[utf8]{inputenc}
+\usepackage[small]{caption}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[switch]{lineno}
+
+% Comment out this line in the camera-ready submission
+\linenumbers
+
+\urlstyle{same}
+
+% the following package is optional:
+%\usepackage{latexsym}
+\usepackage{color}
+\usepackage{colortbl}
+\usepackage{multirow}
+\usepackage{amssymb}
+\usepackage{tabularray}
+
+% See https://www.overleaf.com/learn/latex/theorems_and_proofs
+% for a nice explanation of how to define new theorems, but keep
+% in mind that the amsthm package is already included in this
+% template and that you must *not* alter the styling.
+\newtheorem{example}{Example}
+\newtheorem{theorem}{Theorem}
+
+% Following comment is from ijcai97-submit.tex:
+% The preparation of these files was supported by Schlumberger Palo Alto
+% Research, AT\&T Bell Laboratories, and Morgan Kaufmann Publishers.
+% Shirley Jowell, of Morgan Kaufmann Publishers, and Peter F.
+% Patel-Schneider, of AT\&T Bell Laboratories collaborated on their
+% preparation.
+
+% These instructions can be modified and used in other conferences as long
+% as credit to the authors and supporting agencies is retained, this notice
+% is not changed, and further modification or reuse is not restricted.
+% Neither Shirley Jowell nor Peter F. Patel-Schneider can be listed as
+% contacts for providing assistance without their prior permission.
+
+% To use for other conferences, change references to files and the
+% conference appropriate and use other authors, contacts, publishers, and
+% organizations.
+% Also change the deadline and address for returning papers and the length and
+% page charge instructions.
+% Put where the files are available in the appropriate places.
+
+
+% PDF Info Is REQUIRED.
+
+% Please leave this \pdfinfo block untouched both for the submission and
+% Camera Ready Copy. Do not include Title and Author information in the pdfinfo section
+\pdfinfo{
+/TemplateVersion (IJCAI.2026.0)
+}
+
+\title{ProtAug: An Empirical Investigation of pLM-Guided Data Augmentation for Protein Sequence Prediction Tasks}
+% 修改说明：标题增加"Empirical Investigation"副标题，体现从"主张性"向"探索性"研究的转变，回应审稿人对新颖性论述过度的批评。
+
+
+% \author{
+% Zhuoyang CHEN$^1$
+% \and
+% Ruoqi Wang$^1$\and
+% Qiong Luo$^{1,2}$\\
+% \affiliations
+% $^1$Data Science and Analytics Thrust, The Hong Kong University of Science and Technology (Guangzhou), Guangzhou, China\\
+% $^2$Department of Computer Science and Engineering, The Hong Kong University of Science and Technology, Hong Kong, China\\
+% \emails
+% \{zchen190, rwang280\}@connect.hkust-gz.edu.cn,
+% luo@ust.hk
+% }
+
+\author{Anonymous Authors}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+% 修改说明：摘要完全重写，以四个探索性问题为组织线索，明确回答"做了什么"、"问了哪几个问题"、"发现了什么"。放弃"novel""first"等主张性表述，改用"systematic investigation"。
+    Protein language models (pLMs) offer great potential for protein sequence analysis, yet the scarcity of labeled data often limits their effectiveness in fine-tuning. Data augmentation is a promising remedy, but systematic evaluation of augmentation strategies for protein sequences remains limited, and the conditions under which augmentation confers downstream benefits are not well understood. In this paper, we systematically investigate pLM-guided substitution-based augmentation across seven protein prediction tasks. We propose ProtAug, a framework that leverages encoder-based (ESM-2) and autoregressive (ProtGPT2) pLMs to generate augmented sequences with user-controlled variation levels. Our investigation focuses on four questions: (Q1) whether pLM-synthesized sequences preserve more original signals than simpler methods, (Q2) to what extent augmentation improves prediction performance, (Q3) how variation levels affect downstream accuracy across tasks and models, and (Q4) whether biological plausibility is a necessary condition for achieving improvement. Our experimental results show that: (1) ProtAug\_Esm generally preserves motifs and structural similarity better than simple substitution, often comparable to homology retrieval; (2) augmentation yields consistent but task-dependent improvements, with ProtAug\_Esm achieving the best or second-best performance in 5 out of 7 tasks at 10\% variation; (3) low-to-moderate variation levels (2–30\%) perform best overall, although high-variation augmentation can benefit certain structure-related tasks; (4) the necessity of biological plausibility is task- and variation-dependent—while semantic preservation correlates with performance at low-to-moderate variation levels, improved generalization at high variation levels suggests that regularization effects, rather than label preservation, can also drive performance gains.
+\end{abstract}
+
+\section{Introduction}
+
+Proteins are composed of sequences of amino acids that fold into three-dimensional structures. They play critical roles in various biological processes, such as structural support, molecular transport and catalysis. Similar to natural languages, where arrangements of words in sentences and paragraphs convey meanings, the sequences and structures in proteins contribute to protein functions and properties, or protein semantics. 
+
+As large language models have been widely applied in text-related tasks~\cite{zhou2024LLMcomprehensive}, protein language models (pLMs) have been trained to generate semantic representations for protein sequences~\cite{elnaggar2021prottrans,rives2021biological}. These models, fine-tuned with labeled data, have demonstrated promising performance in various biological tasks. However, labeled protein data are scarce and expensive to acquire~\cite{2020proteininteractome}, especially those related to function, mutation, immune response, and interactions, or in rare species. Without sufficient and representative labeled data, pLMs may struggle to adapt to specific tasks. In this paper, we study how to effectively augment protein sequences to improve pLM performance in tasks.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.48\textwidth]{Overview.pdf}
+  \caption{Illustrations of data augmentation on protein sequences. Methods that do not consider protein context tend to disrupt biological semantics, whereas our proposed ProtAug framework utilizes protein language contexts to guide substitutions, thereby better preserving semantics.}
+  \label{fig:overview}
+\end{figure}
+
+% 修改说明：原版关于现有增强方法局限性的论述保留，但加入了审稿人#590aa2c提到的近期工作对比信息。
+Data augmentation has been used in both image processing~\cite{shorten2019imageaug} and text processing~\cite{wei2019eda}. In contrast, protein sequence augmentation remains largely unexplored. Existing augmentation strategies that perturb protein sequences, such as random substitution or shuffling, are often context-agnostic and may disrupt the structures and functions essential for effective augmentation (Figure \ref{fig:overview}). Recently, Sun et al.~\cite{sun2024apa} conducted the first comprehensive benchmark of protein augmentation methods and proposed semantic-level strategies based on Integrated Gradients and back translation.
+
+Protein language models learn the contextual relationships within protein sequences. During self-supervised pre-training, they distill extensive sequence information into implicit priors that help distinguish between plausible and implausible configurations. Therefore, in this paper, we propose \textbf{ProtAug}, a framework that utilizes the contextual information embedded in pLMs, to generate biologically plausible sequences for effective protein data augmentation. Within this framework, we develop two substitution-based methods, namely \textbf{ProtAug\_Esm} and \textbf{ProtAug\_GPT}. The former is guided by the autoencoding model Esm2~\cite{lin2023esm2}, and the latter uses the autoregressive model ProtGPT2~\cite{ferruz2022protgpt2}. 
+
+Specifically, our proposed methods begin by randomly masking a portion of residues and then resample the masked residues using either a bidirectional or an autoregressive mechanism. We have developed an iterative masking-replacement procedure to allow users to adjust the variation level (0–77\%) for task adaptation. Our focus on substitution strategies ensures better preservation of protein semantics, whereas deletion, repetition, and shuffling strategies are commonly believed to disrupt protein structures and functions. Furthermore, ProtAug does not require querying external evolutionary statistics, since this information is already encoded in the pLM parameters.
+
+Experiments conducted on seven tasks using three pLMs address a core question: can the evolutionary likelihood constraints learned by pLMs—typically used for \textit{de novo} generation—be repurposed as a controlled substitution mechanism for data augmentation? To investigate this, we employ a two-tier evaluation.
+
+First, because direct label verification is infeasible at scale, we use generative quality metrics (motif retention, structural similarity, embedding distribution) as proxies for semantic integrity.  These metrics are not intended to claim biological novelty or functional validity of the generated sequences; rather, they serve as diagnostic tools to quantify how much original semantic information is preserved. They may help explain why certain augmentation strategies outperform others under specific conditions (e.g., variation level, task type), without assuming that preservation of these metrics guarantees downstream gains.
+
+Second, we measure downstream task performance under controlled conditions (including low-resource settings and duplicate baselines) as the ultimate criterion for augmentation effectiveness. Results show that ProtAug\_Esm achieves top-two performance in five out of seven tasks at 10\% variation, with substantial gains in low-resource (5–20\%) data regimes. Further ablation analyses reveal that optimal variation levels are task-dependent: 2–30\% works best overall, but higher variation (55–77\%) can benefit structure-related tasks, likely via regularization. Semantic preservation correlates with performance at low variation levels, but high-variation augmentation can improve generalization even when label consistency is partially compromised. Based on these findings, we provide task-adaptive recommendations for selecting augmentation methods and variation levels.
+
+
+\subsection*{Research Questions and Contributions}
+This study is guided by four research questions, which collectively aim to provide a systematic empirical understanding of pLM-guided protein sequence augmentation:
+
+\begin{itemize}
+    \item \textbf{(Q1) Signal preservation:} Do sequences generated by pLM-guided methods preserve more original biological signals (motifs, structure, and embedding distribution) than simpler alternatives?
+    \item \textbf{(Q2) Downstream task effectiveness:} To what extent does augmentation improve prediction performance, particularly in low-resource settings?
+    \item \textbf{(Q3) Variation level effects:} How do different variation levels (0–77\%) affect downstream task accuracy across augmentation methods, pLM backbones, and task types?
+    \item \textbf{(Q4) Necessity of biological plausibility:} Is biological plausibility (i.e., preserving original signals) a necessary condition for achieving downstream improvement, or can regularization-based gains occur even when plausibility is compromised?
+\end{itemize}
+
+\section{Related Work}
+
+\subsection{Data Augmentation on Images and Texts}
+
+Traditional methods for augmenting image datasets include geometric transformations such as rotation, scaling, translation, and flipping, which preserve image characteristics while introducing variability~\cite{krizhevsky2017imagenet}. Recent advancements have introduced generative models, such as Generative Adversarial Networks (GANs), to generate realistic synthetic images for augmentation~\cite{goodfellow2014GAN,gatys2016style}. In contrast, text data augmentation methods often involve synonym replacement, replacing words in a sentence with their synonyms to generate semantically similar sentences~\cite{wei2019eda}. Back-translation, which involves translating text into another language and then back to the original, is also effective at producing diverse textual variations~\cite{sennrich2016edinburghbacktrans}. Advanced approaches leverage LLMs to generate contextually relevant sentences from existing text~\cite{kobayashi2018contextual,dai2025auggpt}. Additionally, techniques such as word dropout and random insertion have been explored to introduce noise into the training data, thereby further enhancing model robustness~\cite{wei2019eda}. In our work, we treat protein sequences as sentences and amino acids as words or tokens, and utilize pLMs rather than LLMs to generate semantics-preserving proteins based on the context surrounding the positions to be edited.
+
+\subsection{Data Augmentation on Protein Sequences}
+% 修改说明：保留原版论述，但增强了对近期工作的讨论，特别是Sun et al. 2024，直接回应审稿人#590aa2c的批评。
+There is limited work on exploring augmentation methods for protein sequences compared to images and texts. The challenges lie in the unique characteristics of protein sequences compared to natural language and image: (1) protein sequences have a small vocabulary of only 20 amino acids and a few special tokens, making every edit in the sequence a risk of causing substantial changes in structure and function and (2) it is difficult to verify that a transformation preserves the original label of a sequence, whereas the fidelity of an augmented sentence or image can be inspected handily. Current methods circumvent the semantic-checking issue using external rules. For example, \textit{Retrieved Sequence Augmentation}~\cite{ma2023rag} retrieves existing homologous sequences from large databases, which is time-consuming. In contrast, PAM matrices~\cite{oliveira2023temprot} provide evolutionary frequencies for substitution but ignore contextual information. Domain-motivated transformation has been found to achieve consistent results in contrastive learning~\cite{shen2021domainmotivate}, but requires manual editing based on a priori motifs. 
+
+Random substitution and other simple strategies, such as repetition, deletion, and shuffling, are explored but are likely to disrupt semantics~\cite{sun2024apa}. In a recent comprehensive benchmark, Sun et al.~\shortcite{sun2024apa} extended image/text augmentation techniques to proteins and proposed two semantic-level augmentation methods: Integrated Gradients Substitution and Back Translation Substitution. While their work represents an important advance, we encountered reproducibility issues when attempting to run their code (see Section 4.3). Moreover, their evaluation focused on the Automated Protein Augmentation (APA) framework that adaptively selects augmentation combinations, leaving open the question of how individual pLM-guided strategies compare to simpler baselines under controlled conditions.
+
+Gibbs sampling, which iteratively redraws amino acids using the probabilities predicted by transformer models, has been used to generate sequences~\cite{rao2020transformer} but has not been tested as an augmentation method. In this paper, we propose an augmentation framework that uses the evolutionary prior already distilled inside the pre-trained pLM to decide which substitutions are biologically plausible without any external look-up or manual masking, and we further assess the fidelity of the augmented sequences.
+
+\section{Methods}
+% 方法章节内容基本保持不变，但确保与Appendix中增加的量化分析说明同步。
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{procedure.pdf}
+  \caption{Illustrations of the two semantics-preserving substitution augmentation methods in ProtAug. In both methods, a portion of the amino acids is randomly masked, and then protein language models are utilized to predict the amino acids in these masked positions. ProtAug\_Esm uses Esm to generate all amino acids at once by an autoencoding mechanism, whereas ProtAug\_GPT uses ProtGPT2 to generate next tokens chunk by chunk. Both methods adopt an iterative procedure for the variation level to reach the user-specified threshold.}
+  \label{fig:scheme}
+\end{figure*}
+
+\subsection{Problem Formulation}
+The purpose of our proposed ProtAug framework is semantic-level augmentation for protein sequences. When the number of labeled protein sequences in a dataset is insufficient, we use ProtAug to generate novel sequences from existing sequences for accuracy improvement by introducing variation while preserving the properties of the original data.
+
+In this paper, we define the protein augmentation problem as follows: given an original protein sequence 
+\begin{equation}
+\mathbf{S} = (s_1, s_2, \dots, s_L), \quad s_i \in \mathcal{A} = \{A, C, D, \dots, Y\},
+\end{equation}
+
+\noindent where $L$ is the length of the sequence and $s_i$ is one of the 20 amino acids $\mathcal{A}$, generate an augmented sequence $S'$ with the normalized Hamming distance (denoted as \textbf{variation level}) defined as
+\begin{equation}
+d_{\text{H}}(\mathbf{S_k}', \mathbf{S}') = \frac{1}{L}\sum_{i=1}^{L} \mathbb{I}\left[s'_{ik} \neq s_i\right] = \rho,
+\end{equation}
+\noindent for a user-specified variation level $\rho \in [0,1]$, while preserving the associated biological label of $\mathbf{S}$. $k$ is the number of iterations required to reach the specified variation level $\rho$.
+
+
+\subsection{ProtAug\_Esm: Encoder-pLM-guided Substitution}
+%  In practice, the final variation level of the augmented sequences is difficult to precisely control, which may not achieve the predefined level. A trial-and-error procedure is required to ensure reaching a pre-set variation level in this study.
+% 修改说明：方法描述保持不变
+Current pLMs are of the transformer architecture, consisting of encoders, decoders, or both~\cite{elnaggar2021prottrans}. As a pLM with both encoders and decoders works similarly to a decoder-only pLM for generating protein sequences, in this paper we study two methods in ProtAug: one with the encoder and the other with the decoder.
+
+Models adopting the encoder architecture are good at providing contextual information across the entire sequence and can infer a portion of masked positions based on the amino acids preceding or following them. Models in the ProtTrans program, such as ProtBert~\cite{elnaggar2021prottrans} and Esm2~\cite{lin2023esm2}, are in this category. 
+
+In this study, we use Esm2 for the encoder-based strategy, given Esm2's superior performance on several downstream tasks. As illustrated in Figure \ref{fig:scheme}A and Algorithm \ref{esm}, to generate a new sequence from a given one, we first randomly mask a portion of the amino acids in the sequence. From preliminary experiments, we find that Esm2 yields many repetitive amino acids when masking a large portion of the data. To alleviate this issue, we restrict the masked portion to a maximum of 0.15, which is the default value for pretraining BERT. Starting from the masked position, 80\% remain masked, 10\% are replaced with a random amino acid, and the remaining 10\% are restored to their original residues, following the pre-training procedure in the BERT masked language modeling task~\cite{devlin2019bert}. In Step 2, Esm2 is used to generate logits, which are further converted to probabilities, and then amino acids are redrawn using these probabilities. When a generated sequence has a variation level higher than 0.15, we perform multiple rounds of sampling until the variation level is reduced to the threshold. If a sequence is longer than 1000 tokens (amino acids), we split it into slices of 1000 tokens and process each slice in turn.
+
+\begin{algorithm}[ht]
+\caption{ProtAug\_Esm: Encoder-pLM-guided Substitution}
+\begin{algorithmic}[1]
+\REQUIRE Original sequence $S = [s_1, \dots, s_L]$; encoder pLM (ESM-2); target variation level $\rho \in [0,1]$; maximum masking portion per pass is $0.15$.
+\ENSURE Augmented sequence $S'$.
+\STATE $S^{(0)} \leftarrow S$
+\STATE $\Delta \leftarrow \lfloor\rho L\rfloor$      \COMMENT{total number of residues to change}
+\STATE $\text{replaced} \leftarrow 0$, $k \leftarrow 0$ \COMMENT{initialization}
+\WHILE{$\text{replaced} < \Delta$}
+   \STATE Randomly select $m$ distinct positions $P$ in $S^{(k)}$
+   \STATE Create $X$ by replacing positions $P$ with [MASK]
+   \STATE Obtain logits $\leftarrow$ ESM-2($X$) at masked positions
+   \STATE Sample new residues $R \sim \text{softmax}(\text{logits})$
+   \STATE $S^{(k+1)} \leftarrow$ fill positions $P$ in $X$ with $R$
+   \STATE $\text{replaced} \leftarrow $\text{Hamming($S^{(k+1)}$-$S$)} \COMMENT{variation}
+   \STATE $k \leftarrow k+1$
+\ENDWHILE
+\RETURN $S^{(k)}$
+\end{algorithmic}
+\label{esm}
+\end{algorithm}
+
+
+\subsection{ProtAug\_GPT: Decoder-pLM-guided Substitution}
+% 方法描述保持不变
+Models adopting the decoder architecture generate new tokens either from a given fragment or from scratch in a left-to-right manner. ProtGPT2 is a generative model for protein sequences in this category. Because the decoder model generates new tokens based on the preceding (or left) context, uniformly masking random positions requires tens or hundreds of passes to fully generate a new protein sequence of the same length. 
+
+To speed up generation, we group masked positions into chunks. Specifically, when the variation level is less than 0.1, we generate 3 chunks; when it is between 0.1 and 0.4, we generate 5 chunks; for levels above 0.4, we generate 10 chunks (see Figure \ref{fig:scheme}B and Algorithm \ref{gpt}). 
+
+In Step 1, we split each slice of the protein sequence into the predefined number of chunks $c$ and randomly sample a starting position for each chunk. The total number of masked positions in each slice is calculated as the variation level $\rho$ multiplied by the length of the slice. Then we divide this number by the number of chunks to obtain the average number of masked positions $w$ for each chunk in a slice. From the sampled starting position in each chunk, we mask the following amino acids from left to right until we reach the specified number of masked positions for that chunk or reach another masked position. Consecutive masked positions across chunks are merged as one chunk, further accelerating the inference pass of ProtGPT2. After merging, a chunk is a fragment with consecutive masking positions at its right end.
+
+In Step 2, we use the masked chunk 1 sequence as input to the ProtGPT2 model to generate amino acids at the masked positions. For all the '\textbackslash n' tokens generated by ProtGPT2, we replace them with the neutral and frequent amino acid 'L' (Leucine). If ProtGPT2 does not return a sequence of the required length, we supplement the remainder with random amino acids. After all masked positions are filled, chunk 1 is further merged with the masked chunk 2 to form a larger masked sequence, which is then used as input for ProtGPT2. This merge-and-predict loop continues until all masked positions in all chunks are filled, and then the variation level of the generated sequence is checked. We perform multiple rounds of sampling until the variation level reaches the threshold. Since ProtGPT2 can only handle sequences of fewer than 1280 tokens, we split each sequence into slices of 1000 tokens.
+
+
+\begin{algorithm}[ht]
+\caption{ProtAug\_GPT: Decoder-pLM-guided Substitution}
+\begin{algorithmic}[1]
+\REQUIRE Original sequence $S = [s_1, \dots, s_L]$; decoder pLM (ProtGPT2); target variation level $\rho \in [0,1]$; chunk number rule: $c=3$ if $\rho\le0.1$, $c=5$ if $0.1<\rho\le0.4$, else $c=10$.
+\ENSURE Augmented sequence $S'$.
+\STATE $S^{(0)} \leftarrow S$
+\STATE $\Delta \leftarrow \lfloor\rho L\rfloor$      \COMMENT{total number of residues to change}
+\STATE $c \leftarrow$ chosen number of chunks
+\STATE $w \leftarrow \Delta / c$         \COMMENT{number of residues per chunk}
+\STATE $\text{replaced} \leftarrow 0$, $k \leftarrow 0$ \COMMENT{iteration}
+\WHILE{$\text{replaced} < \Delta$}
+\FOR{$i = 1$ to $c$}
+   \STATE Randomly pick starting position $p_i$ in $S^{(k)}$
+   \STATE Positions $P_i \leftarrow [p_i,\, p_i+\lfloor w\rfloor-1]$ (clip to sequence bounds)
+\ENDFOR
+   \STATE $c \leftarrow c_{merge}$ (merge consecutive masked positions)
+   \STATE Split $S^{(k)}$ into $c$ chunks, each ending with consecutive selected positions in $P$, denoted by $S_i^{(k)}$
+\FOR{$i = 1$ to $c$}
+   \STATE $S_i^{(k)} \leftarrow S_{i-1}^{(k+1)} + S_i^{(k)}$ if $i>1$ \COMMENT{if not the first chunk, concatenate with the preceding filled chunk}
+   \STATE Create $X_i$ by replacing positions $P_i$ in $S_i^{(k)}$ with [MASK]
+   \STATE Generate sequence $S_i^{(k+1)} \leftarrow$ ProtGPT2($X_i$)
+   \STATE Replace '\textbackslash{n}' in $S_i^{(k+1)}$ with letter 'L'
+   \STATE Random replacement if Length($S_i^{(k+1)}$) $<$ L
+\ENDFOR
+   \STATE $\text{replaced} \leftarrow $\text{Hamming($S^{(k+1)}$-$S$)} \COMMENT{variation}
+   \STATE $k \leftarrow k+1$
+\ENDWHILE
+\RETURN $S^{(k)}$
+\end{algorithmic}
+\label{gpt}
+\end{algorithm}
+
+\section{Experiments and Results}
+
+\subsection{Experimental Settings}
+% 实验设置基本保留原版，但在适当位置注明了需要更新的链接和需要添加的量化指标描述
+
+\subsubsection{Datasets and Workloads}
+We use five datasets, which give seven prediction tasks, to evaluate the effectiveness of our ProtAug framework. The first three datasets are sourced from Kaggle competitions and the other four are collected from the TAPE benchmark~\cite{rao2019TAPE}: (1) \textbf{Protein function prediction} on the Molecular Function aspect \textbf{(Function\_MF)} involves predicting the presence of 677 functions defined by Gene Ontology~\cite{gene2023go}. (2) \textbf{Thermostability prediction} is to predict the melting temperature of natural enzyme sequences and engineered proteins. (3) \textbf{Epitope prediction} provides peptide records which contain the protein sequences to which they belong, the start and end positions within the corresponding proteins, and binary labels indicating whether they are epitopes. (4) \textbf{Remote homology} detection on \textbf{Family} level classifies proteins into 3888 different structural categories. (5) \textbf{Superfamily} level homology classifies proteins into 1961 structural categories. (6) \textbf{Fold} level homology classifies proteins into 1195 structural categories. (7) \textbf{Secondary structure prediction} is to predict the type of local conformation of each amino acid in a protein, with categorical labels $y \in \{0, 1, 2\}$. For epitope prediction, we randomly split proteins into training, validation, and test sets at a ratio of 7:2:1. For other tasks, we use the default dataset splits provided in the competitions or in TAPE. We summarize the statistics of the five datasets used in this study in Appendix A.
+
+For function prediction, we use Fmax score as the evaluation metric, following the CAFA competition~\cite{zhou2019cafa} settings. For stability prediction, we calculate the Spearman correlation coefficient \textbf{(rho)} between the predicted and ground truth values for evaluation. For epitope prediction, we adopt the Area Under the Curve \textbf{(AUC)}, which measures the area under the ROC (Receiver Operating Characteristic) curve, as the evaluation metric. For other tasks, the vanilla accuracy is used.
+
+\subsubsection{Platform}
+All experiments are conducted on a server with an NVIDIA RTX 3090 GPU with 24 GB GPU memory. The ProtAug framework is implemented in TensorFlow 2.0~\cite{abadi2016tensorflow}. We have modified the ktrain~\cite{maiya2020ktrain} source code to support the Esm2 model, as Esm2 is not supported in the original ktrain.
+
+\subsubsection{Fine-tuning}
+The backbones of pLMs are fixed and only prediction heads are trained. All models are fine-tuned with early stopping if the validation loss is greater than that from the previous epoch. We also explored full-parameter fine-tuning but found it prone to overfitting; therefore, we report only fixed-backbone training in this study. More details and results are reported in Appendix B and D.
+
+\subsection{Metrics for Sequence Quality Evaluation}
+
+\subsubsection{Variation Level}
+We use the normalized Hamming distance to measure residue-wise amino acid differences between the original and the generated sequences. We first count positions in the two sequences that differ in residues, then divide this count by the length of the sequence.
+
+\subsubsection{Motif Retention Rate}
+We perform a homology search with \textit{hmmscan} across the Pfam database~\cite{paysan2025pfam} and retain aligned motifs with E-values greater than 1e-4. The \textbf{motif retention rate} is calculated as the percentage of overlapping motifs in the original motifs. We also count the number of disrupted proteins caused by substitution. A protein is considered disrupted if no Pfam motif is aligned with it.
+
+\subsubsection{Amino Acid Diversity}
+We use Shannon diversity to measure amino acid diversity in a sequence based on the occurrences of amino acids (Appendix C).
+
+\subsubsection{Amino Acid Repetition}
+The repetition ratio of amino acids in a sequence is defined as the number of subsequences of three identical amino acids divided by the length of the sequence. For example, the repetition ratio of MDPAAAA is 2/7 because the sequence is of length 7 and contains two AAA's (Appendix C).
+
+\subsubsection{Structure Analysis}
+In order to assess whether a generated protein retains the structural motif of the original protein, we use EsmFold to predict the structure of a protein from its amino acid sequence. Due to the limitation of computational resources, we perform prediction only for proteins less than 713 aa.. We use TM-score~\cite{zhang2005tmalign} to quantify the similarity between two structures, and use pLDDT from EsmFold~\cite{lin2023esmfold} to indicate the quality of the prediction. Higher values of TM-score and pLDDT indicate greater similarity between the predicted structure of the generated protein and the original protein, and better prediction quality, respectively. Structures of original proteins are retrieved from AlphaFoldDB~\cite{varadi2022alphafolddb}.
+
+% \subsubsection{Regularization Effect Quantification} \label{sec:regularization}
+% % 新增小节：应审稿人#4838d6d的要求，提供正则化效应的量化方法，这是您在问题2中提到的额外分析需求。
+% To quantify whether augmentation mitigates overfitting beyond simple memorization of training data, we adopt two complementary metrics. First, we compute the \textbf{early stopping gain}, defined as the difference in the number of training epochs before early stopping between the augmented condition and the No\_aug baseline at the same training set size. A positive gain indicates that augmentation allows longer training before validation loss begins to increase, suggesting improved generalization. Second, for residue-level tasks (secondary structure prediction and epitope prediction), where per-residue labels are inherently position-specific and substitution may invalidate individual labels, we compute the \textbf{validation-to-training loss ratio} at the epoch where No\_aug achieves its best validation performance. A lower ratio under augmentation conditions indicates that validation performance more closely tracks training performance, reflecting reduced overfitting.  
+
+% % 需要补充的具体计算结果请见Appendix G的更新内容。修改时请写：These metrics are reported in Appendix G.
+
+\subsection{Baseline Methods}
+\subsubsection{No Augmentation}
+\textbf{No\_aug} denotes not using any augmented data. Without augmentation, the number of training samples is about half of those with augmentation.
+
+\subsubsection{Duplicate}
+We duplicate the training data as a control for sample size in the training set when investigating the effect of different variation levels (denote as \textbf{Duplicate}).
+
+\subsubsection{Random Substitution}
+A portion of the amino acids in a sequence is randomly masked, and each masked position is randomly replaced by one of the 20 amino acids (denoted as \textbf{Random}).
+
+\subsubsection{PAM-guided Substitution}
+Instead of fully random sampling, different PAM (Point Accepted Mutation) matrices~\cite{dayhoff1978pam} are used to provide evolutionary hints for substitution (denoted as \textbf{PAM}). Each element in a PAM matrix represents the probability of one amino acid being replaced by another. Lower-numbered PAM matrices correspond to more conservative substitutions, while higher-numbered matrices allow for greater variation. We utilize various PAM matrices to generate sequences with specified levels of variation: PAM1 for 2\% and 10\%, PAM50 for 30\%, and PAM250 for 55\% and 77\%.
+
+\subsubsection{Homology Search}
+The SwissProt~\cite{uniprot2023} database, which contains around 570,000 natural sequences, is used as the external resource. After filtering database sequences that share similarities greater than 90\% with sequences in training, validation, and test sets, we search each protein in training sets against SwissProt with \textit{Diamond} and use the sequence with the highest identity as replacement for augmentation. Results with E-value less than 1e-10 and identity value less than 0.2 are filtered. Different variation levels are set as identity upper bounds, and sequences with no hits are replaced with generated sequences in \textbf{PAM} with the same variation level.
+
+% \subsubsection{Sun et al. (2024) APA Framework}
+% % 新增小节：回应审稿人#590aa2c关于"基线未包含近期更强方法"的批评
+% Sun et al.~\shortcite{sun2024apa} proposed Automated Protein Augmentation (APA), an adaptive framework that selects from an augmentation pool including Integrated Gradients Substitution and Back Translation Substitution. We attempted to reproduce their method using the publicly available code (to be replaced). However, due to missing dependencies and runtime errors on our RTX 3090 environment, we were unable to successfully execute their pipeline. We therefore limit our comparison to the reported results in their paper. For each task and pLM backbone, we extract the best performance achieved by APA from the original Tables (to be modified), acknowledging that direct apples-to-apples comparison is constrained by differences in experimental setups (e.g., different train/validation splits, augmentation-to-original ratio, and evaluation protocols). To facilitate a more controlled comparison, we re-implemented their Integrated Gradients Substitution (to be modified) following the algorithmic description in their paper, and evaluated it at multiple variation levels on a subset of tasks. Results of this comparison are presented in Section 4.5.
+
+\subsection{Q1: Signal Preservation — Do pLM-guided Methods Retain More Original Information?}
+
+We measure the quality of generated sequences by motif retention, amino acid diversity, repetition, and structure similarity. \textbf{HomologyTop} denotes that we set identity \textbf{lower bound} instead of upper bound as in Homology, to retrieve the most similar sequences in SwissProt. These two homology search methods, as they contain natural proteins, are served as positive control. Overall, ProtAug\_Esm preserves motifs, structure, and embedding distribution better than Random/PAM, comparable to Homology.
+
+In Figure \ref{fig:quality}, with increasing variation level, protein motifs are more widely disrupted, and more proteins lose their original motifs completely, as reflected by decreasing motif retention rates and increasing numbers of disrupted proteins. Our two proposed pLM-guided methods, especially ProtAug\_Esm, retain original semantic signals comparable to natural sequences from homology search, and better than the two simple substitution methods, reflected by their higher motif retention rates and lower disruption counts. This could partly explain why they show advantages over context-agnostic substitution methods such as Random and PAM-guided substitution.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{Stability_quality.pdf}
+  \caption{Quality of the augmented data on the Function\_MF dataset.}
+  \label{fig:quality}
+\end{figure}
+
+We also observe that the Shannon diversity decreases and the repetition ratio increases dramatically when using ProtAug\_Esm but not so when using ProtAug\_GPT. This could be due to the bi-directional autoencoding mechanism in which amino acids at masked positions are generated simultaneously. This mechanism prioritizes amino acids with high occurrences in the training data when the original protein context is not sufficiently preserved. In comparison, ProtAug\_GPT preserves high amino acid diversity, which may be beneficial for specific tasks.
+
+Furthermore, we use TM-score to measure the structural similarity between the augmented and the original sequence, and use pLDDT to measure the confidence of structure prediction. We find that sequences generated by ProtAug\_Esm are more similar to their original ones in structures compared to other methods, even more similar than sequences from homology search. Predicted structures from ProtAug-generated sequences have confidence comparable to that of HomologyTop natural sequences and higher than that of other augmentation methods.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{Function_tSNE_less.pdf}
+  \caption{Distribution drifts between the original and generated data in Function\_MF dataset shown by t-SNE plot.}
+  \label{fig:tSNE}
+\end{figure}
+
+
+\begin{table*}[t]
+    \centering
+    \tiny
+    \begin{tabular}{llccccccccc}
+    \hline
+    \textbf{Model} & \textbf{Method} & \textbf{Function MF} & \textbf{Stability} & \textbf{Epitope} & \multicolumn{3}{c}{\textbf{Remote Homology}} & \textbf{Secondary} \\ 
+    (Parameters)& & & & & \textbf{Family} & \textbf{Superfamily} & \textbf{Fold} & \textbf{Structure}\\
+    \hline
+    \multirow{6}{*}{DistilProtBert (230M)} 
+    & No\_aug & 0.562 ($\pm$0.008) & 0.494 ($\pm$0.006) & \underline{0.514 ($\pm$0.009)} & 0.216 ($\pm$0.002) & 0.035 ($\pm$0.003) & 0.087 ($\pm$0.013) & 0.777 ($\pm$0.003) \\
+    & Homology & \textbf{0.579 ($\pm$0.002)} & 0.495 ($\pm$0.010) & 0.494 ($\pm$0.032) & 0.271 ($\pm$0.022) & 0.041 ($\pm$0.009) & 0.081 ($\pm$0.007) & 0.771 ($\pm$0.002) \\
+    & Random & \underline{0.578 ($\pm$0.003)} & \underline{0.512 ($\pm$0.014)} & 0.470 ($\pm$0.019) & 0.340 ($\pm$0.011) & \textbf{0.051 ($\pm$0.006)} & 0.087 ($\pm$0.008) & \underline{0.779 ($\pm$0.002)} \\
+    & PAM & 0.578 ($\pm$0.004) & \textbf{0.517 ($\pm$0.015)} & 0.501 ($\pm$0.025) & \underline{0.352 ($\pm$0.008)} & 0.047 ($\pm$0.012) & \underline{0.088 ($\pm$0.009)} & 0.778 ($\pm$0.004) \\
+    & ProtAug\_Esm & 0.573 ($\pm$0.001) & 0.511 ($\pm$0.014) & \textbf{0.539 ($\pm$0.011)} & \textbf{0.363 ($\pm$0.012)} & 0.051 ($\pm$0.007) & 0.084 ($\pm$0.011) & 0.777 ($\pm$0.007) \\
+    & ProtAug\_GPT & 0.573 ($\pm$0.004) & 0.510 ($\pm$0.026) & 0.510 ($\pm$0.036) & 0.331 ($\pm$0.008) & \underline{0.051 ($\pm$0.004)} & \textbf{0.091 ($\pm$0.008)} & \textbf{0.780 ($\pm$0.002)} \\
+    \hline
+    \multirow{6}{*}{prot\_bert\_bfd (430M)} 
+    & No\_aug & 0.620 ($\pm$0.005) & \underline{0.610 ($\pm$0.006)} & 0.619 ($\pm$0.027) & 0.271 ($\pm$0.009) & 0.073 ($\pm$0.002) & \textbf{0.170 ($\pm$0.020)} & 0.818 ($\pm$0.001) \\
+    & Homology & \textbf{0.624 ($\pm$0.002)} & 0.577 ($\pm$0.007) & \cellcolor[gray]{0.8}\underline{0.662 ($\pm$0.019)} & 0.406 ($\pm$0.017) & 0.096 ($\pm$0.002) & 0.164 ($\pm$0.011) & 0.813 ($\pm$0.002) \\
+    & Random & 0.620 ($\pm$0.004) & 0.598 ($\pm$0.002) & 0.600 ($\pm$0.015) & 0.487 ($\pm$0.013) & 0.112 ($\pm$0.002) & 0.165 ($\pm$0.016) & 0.819 ($\pm$0.002) \\
+    & PAM & 0.615 ($\pm$0.004) & \textbf{0.616 ($\pm$0.006)} & 0.632 ($\pm$0.010) & \underline{0.497 ($\pm$0.014)} & \underline{0.117 ($\pm$0.010)} & 0.166 ($\pm$0.018) & \textbf{0.820 ($\pm$0.002)} \\
+    & ProtAug\_Esm & \underline{0.620 ($\pm$0.001)} & 0.597 ($\pm$0.009) & \cellcolor[gray]{0.8}\textbf{0.677 ($\pm$0.010)} & \textbf{0.504 ($\pm$0.013)} & \textbf{0.120 ($\pm$0.008)} & \underline{0.169 ($\pm$0.015)} & \underline{0.819 ($\pm$0.001)} \\
+    & ProtAug\_GPT & 0.617 ($\pm$0.003) & 0.610 ($\pm$0.007) & 0.634 ($\pm$0.008) & 0.487 ($\pm$0.009) & 0.109 ($\pm$0.010) & 0.166 ($\pm$0.020) & 0.819 ($\pm$0.002) \\
+    \hline
+    \multirow{6}{*}{Esm2 (650M)} 
+    & No\_aug & 0.659 ($\pm$0.005) & 0.641 ($\pm$0.019) & 0.470 ($\pm$0.009) & 0.481 ($\pm$0.006) & 0.305 ($\pm$0.142) & \cellcolor[gray]{0.8}\textbf{0.284 ($\pm$0.007)} & \cellcolor[gray]{0.8}\underline{0.825 ($\pm$0.002)} \\
+    & Homology & 0.661 ($\pm$0.007) & 0.609 ($\pm$0.012) & 0.455 ($\pm$0.006) & 0.767 ($\pm$0.016) & 0.418 ($\pm$0.002) & 0.278 ($\pm$0.005) & 0.806 ($\pm$0.003) \\
+    & Random & 0.658 ($\pm$0.008) & 0.640 ($\pm$0.002) & 0.475 ($\pm$0.012) & 0.845 ($\pm$0.002) & \cellcolor[gray]{0.8}\textbf{0.476 ($\pm$0.002)} & 0.276 ($\pm$0.010) & 0.822 ($\pm$0.003) \\
+    & PAM & 0.656 ($\pm$0.003) & \cellcolor[gray]{0.8}\textbf{0.647 ($\pm$0.002)} & 0.470 ($\pm$0.017) & \cellcolor[gray]{0.8}\underline{0.848 ($\pm$0.002)} & 0.470 ($\pm$0.007) & 0.275 ($\pm$0.013) & 0.825 ($\pm$0.004) \\
+    & ProtAug\_Esm & \cellcolor[gray]{0.8}\textbf{0.663 ($\pm$0.003)} & 0.644 ($\pm$0.005) & \textbf{0.514 ($\pm$0.022)} & \cellcolor[gray]{0.8}\textbf{0.850 ($\pm$0.005)} & \cellcolor[gray]{0.8}\underline{0.471 ($\pm$0.004)} & 0.278 ($\pm$0.010) & \cellcolor[gray]{0.8}\textbf{0.831 ($\pm$0.004)} \\
+    & ProtAug\_GPT & \cellcolor[gray]{0.8}\underline{0.661 ($\pm$0.006)} & \cellcolor[gray]{0.8}\underline{0.646 ($\pm$0.002)} & \underline{0.482 ($\pm$0.013)} & 0.836 ($\pm$0.010) & 0.455 ($\pm$0.003) & \cellcolor[gray]{0.8}\underline{0.280 ($\pm$0.011)} & 0.823 ($\pm$0.004) \\
+    \hline
+    \end{tabular}
+    \caption{Performance of different augmentation across pLMs and tasks with mean values and standard deviations. Values in bold and underlined indicate the highest and second-highest performance, respectively, for a specific prediction model and task. Shaded cells indicate the highest and second-highest performance in a certain task across all settings.}
+    \label{tab:results}
+\end{table*}
+
+The t-SNE visualization in Figure \ref{fig:tSNE} demonstrates that pLM-generated proteins are more similar to the original ones than those generated by simple methods, as indicated by smaller separation between the two clusters in ProtAug\_Esm embeddings, especially at higher variation levels ($>$30\%). 
+
+\subsection{Q2: Downstream Task Effectiveness — How Much Improvement Is Achieved, Especially in Low-Resource Settings?}
+
+We evaluate different augmentation strategies with a 1:1 generation at a 10\% variation level for fine-tuning three widely used pLMs in seven tasks. 
+
+Table \ref{tab:results} shows that ProtAug\_Esm achieves top-2 performance in 5 out of 7 tasks (4 rank-1), and ProtAug\_GPT, while less effective than ProtAug\_Esm, wins in 3 out of 7 tasks (3 rank-2). Substitution augmentation generally improves prediction accuracy compared to the No\_aug baseline and even over Homology, which uses external resources. Among the three pLM backbones, Esm2 generally produces the best results. These findings highlight the robustness and effectiveness of our proposed ProtAug framework, especially ProtAug\_Esm, in fine-tuning pLMs for performance improvement. We further demonstrate that ProtAug\_Esm performs reasonably well in low-resource settings, across five smaller fractions ranged from 1\% to 50\% training data in all seven tasks, achieving the best performance in most cases over other augmentation methods. (Figure \ref{fig:wincount}; also see Appendix E).
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{win_counts.pdf}
+  \caption{Number of times each augmentation method achieved the best performance across 7 tasks and 5 low-resource data fractions (1\%, 5\%, 10\%, 20\%, 50\%) using Esm2 backbone.
+}
+  \label{fig:wincount}
+\end{figure}
+
+\subsection{Q3: Variation Level Effects — How Does Substitution Rate Affect Performance?}
+
+We also investigate the performance effects of using augmentation data generated from different methods with 0\%, 2\%, 10\%, 30\%, 55\%, and 77\% differences (variation levels) from their original sequences. For a fair comparison, we define 0\% as using duplicate (denoted as \textbf{Duplicate}) training data to ensure equal training set sizes across all variation levels.
+
+\begin{figure*}[ht]
+  \centering \includegraphics[width=0.98\textwidth]{variation_level.pdf}
+  \caption{Performance of fine-tuning pLMs across variation levels. Dashed lines indicate performance without augmentation. Stars denote the highest scores of corresponding models.
+}
+  \label{fig:variationfix}
+\end{figure*}
+
+Results indicate that the effect of variation level differs among prediction models, augmentation methods, and tasks (Figure \ref{fig:variationfix}). We report results of three tasks and the complete results can be found in Appendix F. We observe that augmentations with 2\% and 10\% variation levels tend to outperform the No\_aug setting, with 10\% variation achieving the overall best performance. Surprisingly, using homology search with the most similar sequences (HomologyTop) as augmentation does not guarantee the best results, potentially due to label inconsistency. In general, the best performance falls whitin a 2\% to 30\% variation range. However, we observe that ProtAug\_GPT with a variation level of 77\% achieves high performance gain on secondary structure prediction. The two smaller models also benefit from high-variation-level augmentation in some cases. These results suggest that a flexible variation level can be beneficial depending on specific augmentation methods, pLM models, and tasks. 
+
+In addition, we assess the average time required for augmentation for these strategies. In Table \ref{time}, the two simple substitution methods are the most time-efficient, whereas the augmentation time of the two pLM-guided methods increases with the variation level due to the iteration of sampling and replacement.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Aug. Time (s)} & \multicolumn{5}{c}{\textbf{Variation Level}} \\ 
+\cmidrule(lr){2-6}
+\textbf{Method}  & \textbf{2\%} & \textbf{10\%} & \textbf{30\%} & \textbf{55\%} & \textbf{77\%} \\ 
+\midrule
+Random & 0.0004 & 0.0005 & 0.001 & 0.014 & 0.016 \\ 
+PAM & 0.008 & 0.016 & 0.008 & 0.008 & 0.016 \\ 
+ProtAug\_Esm & 0.048 & 0.049 & 0.053 & 0.074 & 0.117 \\ 
+ProtAug\_GPT & 4.33 & 23.24 & 23.70 & 31.68 & 54.69 \\ 
+\bottomrule
+\end{tabular}
+\caption{Average augmentation time of protein sequence in Epitope with average length of 572 aa.}
+\label{time}
+\end{table}
+
+Considering both the accuracy performance and augmentation time, we recommend ProtAug\_Esm over ProtAug\_GPT at the 2-30\% variation level in future studies.
+
+\subsection{Q4: Necessity of Biological Plausibility — Is Semantic Preservation Required for Improvement?}
+
+% Although it is commonly believed that augmentation should keep the fidelity between data and label to ensure accuracy improvement, our results in Figure \ref{fig:onlyaug} suggest that the augmented sequences themselves generally do not benefit pLM fine-tuning. Rather, performance gains are achieved when combining both generated and original data.
+
+% \begin{figure}[ht]
+%   \centering
+%   \includegraphics[width=0.48\textwidth]{only_aug.pdf}
+%   \caption{Performance of fine-tuning pLMs with only augmented data. 0\% level indicates the performance of using the original training data with no augmentation.
+% }
+%   \label{fig:onlyaug}
+% \end{figure}
+
+To assess whether biological plausibility (i.e., preserving original sequence signals) is necessary for achieving downstream improvement, we examine the relationship between signal preservation (Q1) and performance gains (Q2–Q3) across variation levels and task types. To evaluate whether the augmented sequences retain the original labels and help improve learning generalization, we use embeddings of training samples as nearest-neighbor predictors and transfer labels to test samples. The relatively high KNN accuracies of ProtAug in corresponding tasks indicate that (1) the feature space of the training data lies close to that of the test set and (2) the labels in the corresponding neighborhood are consistent with the ground-truth labels.
+
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{knn_coverage.pdf}
+  \caption{Label consistency measured by KNN predictors.
+}
+  \label{fig:coverage}
+\end{figure*}
+
+At 2\%-30\% variation level, ProtAug\_Esm preserves motifs, structural similarity, and embedding distribution substantially better than Random or PAM (Figure \ref{fig:quality} and \ref{fig:tSNE}). KNN label consistency remains high (Figure \ref{fig:coverage}), indicating that augmented sequences largely retain the original labels. Under these conditions, we observe consistent performance improvements across most tasks (Table \ref{tab:results}, Figure \ref{fig:variationfix}). This pattern supports the label-preserving augmentation hypothesis: when semantic integrity is maintained, augmentation effectively expands the training set with valid label-carrying examples.
+
+Interestingly, for structure-rich tasks (superfamily and fold levels of homology detection), KNN label consistency does not decrease—it even increases with higher variation levels. This suggests that structural labels may be more tolerant to sequence variation, challenging the necessity of exact sequence-level plausibility.
+
+At higher levels (55-77\%), signal preservation and KNN label consistency decrease substantially. If biological plausibility were strictly necessary, performance should decline correspondingly. However, we observe that ProtAug\_GPT with 77\% variation achieves competitive or even improved performance compared to lower variation levels in secondary structure prediction (Figure \ref{fig:variationfix}). This occurs despite clear evidence that many individual residue labels are no longer valid after high-rate substitution, since per-position secondary structure annotations are highly sequence-dependent. It suggests that performance gains at high variation levels arise primarily from regularization rather than from label-preserving sample expansion.
+
+Thus, biological plausibility (semantic preservation) is a sufficient but not necessary condition for effective augmentation. At low-to-moderate variation levels (2–30\%), preserving original signals correlates with performance gains, supporting the label-preserving hypothesis. At high variation levels (55–77\%), performance can still improve, particularly for structure-related tasks or when overfitting is severe, due to regularization effects.
+
+% \begin{figure*}[ht]
+%   \centering
+%   \includegraphics[width=0.98\textwidth]{loss_acc.pdf}
+%   \caption{Training/Validation accuracy change over steps in epitope and secondary structure prediction tasks.
+% }
+%   \label{fig:loss_acc}
+% \end{figure*}
+
+% We also find that ProtAug helps alleviate overfitting, as reflected by higher validation accuracy than No\_aug and other methods in the two residue-level tasks (Figure \ref{fig:loss_acc}). This regularization effect is particularly pronounced for ProtAug\_GPT at higher variation levels (55–77\%), where label consistency KNN accuracy is substantially reduced but downstream performance on structure-related tasks (e.g., secondary structure prediction) remains competitive or even improved, suggesting that in certain contexts, augmentation primarily regularizes the model rather than expanding valid label-preserving samples.
+
+
+
+\section{Conclusion and Recommendations}
+
+In this study, we conducted a systematic empirical investigation of pLM-guided data augmentation for protein sequence prediction tasks. We proposed ProtAug, a framework that leverages both encoder-based (ESM-2) and autoregressive (ProtGPT2) pLMs to generate augmented sequences with controllable variation levels. Our investigation focuses on four questions concerning signal preservation, downstream effectiveness, variation level effects, and the necessity of biological plausibility.
+
+We summarize the answers to the four research questions posed in the Introduction:
+
+\begin{itemize}
+    \item \textbf{Q1 (Signal preservation):} ProtAug\_Esm consistently preserves motifs, structural similarity (TM-score), and embedding distribution (lower MMD\(^2\)) better than Random and PAM, often comparable to Homology retrieval, especially at low-to-moderate variation levels ($\leq$30\%). This supports the claim that pLM-guided methods produce augmented sequences closer to the original data manifold.
+
+    \item \textbf{Q2 (Downstream effectiveness):} Augmentation yields consistent but task-dependent improvements. At 10\% variation, ProtAug\_Esm achieves the best or second-best performance in 5 out of 7 tasks. In low-resource settings (1–50\% training data), ProtAug\_Esm outperforms both No\_aug and Duplicate with margins up to 0.03–0.05 Fmax, achieving the best performance in most scenarios, underscoring its practical value when labeled data are scarce.
+
+    \item \textbf{Q3 (Variation level effects):} Low-to-moderate variation (2–30\%) performs best overall across tasks and models. However, high-variation augmentation (55–77\%) can benefit specific tasks (e.g., secondary structure prediction with ProtAug\_GPT), and smaller pLM backbones occasionally benefit from higher variation. This task- and model-dependent behavior suggests that variation level should be treated as a tunable hyperparameter.
+
+    \item \textbf{Q4 (Necessity of biological plausibility):} The necessity of plausibility is task- and variation-dependent. At $\leq$30\% variation, higher motif retention and structural similarity correlate with better downstream performance, consistent with the label-preserving augmentation hypothesis. At higher variation levels, especially with ProtAug\_GPT, performance can improve despite reduced label consistency, suggesting that regularization effects can also drive gains. Thus, biological plausibility is a sufficient but not necessary condition for effective augmentation. Practitioners should select variation levels based on their primary goal: label-preserving expansion (2–30\% with ProtAug\_Esm) or regularization (55–77\% with ProtAug\_GPT).
+\end{itemize}
+
+Based on these findings, we offer the following task-adaptive recommendations:
+
+\begin{itemize}
+    \item \textbf{For resource-constrained scenarios (e.g., $\le$20\% training data):} Use ProtAug\_Esm with 10\% variation. This provides the most robust gains relative to both No\_aug and Duplicate.
+    \item \textbf{For function- or label-sensitive tasks (most classification/regression tasks):} Use 2–30\% variation with ProtAug\_Esm. This balances semantic preservation and diversity while maintaining label consistency.
+    \item \textbf{For structure-related tasks or when overfitting is severe:} Consider higher variation levels (55–77\%) with ProtAug\_GPT, which may induce regularization benefits even when label consistency is reduced.
+    \item \textbf{When computational efficiency is a primary concern:} Random or PAM-based substitution may suffice, as they sometimes approach ProtAug performance while being substantially faster.
+\end{itemize}
+
+These findings advocate for ProtAug as a practical and cost-effective paradigm for enhancing protein sequence modeling in task-specific or resource-constrained scenarios. More broadly, our investigation highlights that the relationship between semantic plausibility and augmentation effectiveness is more nuanced than previously assumed, with both label-preserving and regularization-based mechanisms contributing to downstream improvements.
+
+\appendix
+
+% \section*{Ethical Statement}
+
+% There are no ethical issues.
+
+% \section*{Acknowledgments}
+
+% The preparation of these instructions and the \LaTeX{} and Bib\TeX{}
+% files that implement them was supported by Schlumberger Palo Alto
+% Research, AT\&T Bell Laboratories, and Morgan Kaufmann Publishers.
+% Preparation of the Microsoft Word file was supported by IJCAI.  An
+% early version of this document was created by Shirley Jowell and Peter
+% F. Patel-Schneider.  It was subsequently modified by Jennifer
+% Ballentine, Thomas Dean, Bernhard Nebel, Daniel Pagenstecher,
+% Kurt Steinkraus, Toby Walsh, Carles Sierra, Marc Pujol-Gonzalez,
+% Francisco Cruz-Mencia and Edith Elkind.
+
+% 修改说明：附录章节的修改主要内容包括：
+% 1. Appendix B中增加了regularization quantificatin metrics的实验设置描述（响应审稿人#4838d6d）
+% 2. Appendix D中预期增加与Sun et al. (2024) APA方法的对比结果表
+% 3. Appendix G中更新了训练/验证曲线并加入正则化量化指标的具体数值
+% 具体的数据补充请您在回复中填入实际运行结果。
+
+%% The file named.bst is a bibliography style file for BibTeX 0.99c
+\bibliographystyle{named}
+\bibliography{main}
+
+\clearpage
+
+\appendix
+
+\section*{Appendix A: Statistics of Datasets}
+Statistics of datasets are provided in Table \ref{dataset}.
+
+\begin{table*}[ht]
+\centering
+\small
+\begin{tabular}{rccccccc}
+\toprule
+Dataset   & \textbf{Function\_MF} & \textbf{Stability} & \textbf{Epitope} & \textbf{Family} & \textbf{Superfamily} & \textbf{Fold} & \textbf{Secondary Structure} \\
+\midrule
+\#. Training   & 32421            & 25112             & 533             & 12312           & 12312                & 12312         & 8678                        \\ \hline
+\#. Validation & 3587             & 6278              & 153             & 736             & 736                  & 736           & 2170                        \\ \hline
+\#. Testing    & 1137             & 2413              & 78              & 1272            & 1254                 & 718           & 513                         \\ \hline
+\#. Labels     & 677              & 1                 & 2               & 3888            & 1961                 & 1195          & 3                           \\ \hline
+Avg. length   & 554              & 446               & 572             & 167             & 168                  & 160           & 256                         \\
+\bottomrule
+\end{tabular}
+\caption{Statistics of the datasets.}
+\label{dataset}
+\end{table*}
+
+\section*{Appendix B: Fine-tuning Details}
+\subsection*{Function Prediction}
+Following the TEMPROT workflow, we first generate sequence slices with a sliding window of size 500 amino acids (aa.). Additional slices are created if two consecutive slices have at least 250 aa. overlapping. Each slice retains the same function labels as the original protein sequence. Then we pass each slice through the pre-trained pLM to extract embeddings. Although in the main results we only report the performance of only training the prediction heads by freezing the pLM backbones for all tasks, we also perform full-parameter fine-tuning on all protein slices with their labels. Full-parameter fine-tuning results of three tasks are provided in Session F. Then the embeddings are derived from the [CLS] token of the last encoder block of the transformer architecture. For each protein, the embeddings from all its slices are aggregated into a single representation by taking the mean of the embeddings from all slices belonging to the same protein. After generating the combined embeddings for each protein, the next step is to train a two-layer MLP meta-classifier with binary cross entropy loss to make the final predictions. The architecture consists of one hidden layer with 1000 neurons and a ReLU activation function. The Adam optimizer is chosen and initial learning rate is set to 1e-3. The model is trained for up to 1000 epochs with a batch size of 32. The training incorporates early stopping with a patience of 15 epochs and reduces the learning rate on a plateau with a patience of 5 epochs.
+
+\subsection*{Stability Prediction}
+The slicing strategies for embedding generation and the meta-classification procedure for final prediction are also applied on predicting protein thermostability. The meta-classifier uses a three-layer MLP regression head with 500 and 50 neurons in the hidden layers and uses mean square error loss. The Adam optimizer is chosen, the initial learning rate is set as 1e-3, and a batch size of 32 is chosen. Other training strategies are the same as those in function prediction.
+
+\subsection*{Epitope Prediction}
+For each peptide record, we create a segment with a maximum length of 500 aa. which is centered around the peptide sequence as much as possible. For peptides that are near the boundaries of the protein, we still make sure a segment length of 500 aa. although in this case the peptide is not at the center of the segment. If the protein sequence is shorter than 500, the entire protein sequence is used as the segment. For each segment, the original epitope binary label is retained as the label. Then we calculate the start and end positions of these peptides in the corresponding newly created protein segments. When preparing inputs for fine-tuning, we manually modify the token\_type\_ids to indicate the positions of peptides in the input segments. Specifically, in the token\_type\_ids vector only positions that belong to the peptide are set to 1 and the rest are set to 0. We extract only the residue embeddings after the pLM forward process and then take the mean of these embeddings as a single representation for a peptide in the context of its segment. No meta-classification training is used. We define a three-layer MLP classification head with 256 and 32 neurons in the hidden layers and use binary cross entropy loss for end-to-end training. The Adam optimizer is chosen, the learning rate is set as 1e-4, and a batch size of 4 is chosen. Other training strategies are the same as those in function prediction.
+
+\subsection*{Remote Homology Detection on Family, Superfamily, and Fold Levels}
+The slicing strategies for embedding generation and the meta-classification procedure for final prediction are also applied on Remote homology detection. The meta-classifier uses a two-layer MLP classification head with 1200 neurons and uses categorical cross entropy loss. The Adam optimizer is chosen, the learning rate is set as 1e-4, and a batch size of 32 is chosen. Other training strategies are the same as those in function prediction.
+
+\subsection*{Secondary Structure Prediction}
+Because each amino acid in the protein sequence has a categorical label, which indicating one of the three possible local conformation of the current position, we adopt a three-layer MLP classification head with 512 and 256 neurons in the hidden layers to predict the secondary structure label for each position in the protein sequence and use cross entropy loss. The Adam optimizer is chosen, the learning rate is set as 1e-3, and a batch size of 16 is chosen.
+
+
+\section*{Appendix C: Details of Evaluation Metrics}
+\subsection*{Definition of Fmax Score in Function Prediction}
+
+The Fmax score is defined as follows:
+
+\begin{equation}
+\label{eq:Fmax}
+Fmax = \underset{\tau}{max}\left\{ \frac{2\times precision(\tau)\times recall(\tau)}{precision(\tau)+ recall(\tau)} \right\}\space,
+\end{equation}
+
+\noindent where $\tau$ is a threshold to be determined to maximize the F1 score. The precision and recall for a multi-label task are defined as:
+\begin{equation}
+\left\{
+\begin{array}{l}
+precision(\tau) = \frac{1}{s(\tau)}\sum_{i=1}^{s(\tau)}\frac{\sum_{k}^{}I(p_{ik}>\tau \wedge y_{ik}\equiv 1{}^{} )}{\sum_{k}^{}I(p_{ik}>\tau)} \\
+\\
+recall(\tau) = \frac{1}{n}\sum_{i=1}^{n}\frac{\sum_{k}^{}I(p_{ik}>\tau \wedge y_{ik}\equiv 1{}^{} )}{\sum_{k}^{}I(y_{ik}\equiv 1)}
+\end{array}
+\right.\space\space.
+\end{equation}
+
+Here $s(\tau)$ denotes the number of proteins that are predicted with at least one function, $k$ is the total number of labels, $p_{ik}$ is the predicted score for the function, and $y_{ik}$ is the ground truth with 1 indicating the existence of the function and 0 otherwise. $n$ is the total number of proteins in the evaluation.
+
+\subsection*{Definition of Repetition Ratio of Sequences}
+
+The repetition ratio of one sequence is defined as follows:
+
+\begin{equation}
+Rep = \frac{N_{tri}}{L},
+\end{equation}
+
+\noindent where $N_{tri}$ is the number of triplets of identical amino acids and $L$ is the length of the amino acid sequence. 
+
+The overall repetition ratio of $N$ sequences is the average of the repetition ratios of these sequences:
+
+\begin{equation}
+Rep_{\text{mean}} = \frac{1}{N} \sum_{i=1}^{N} Rep_i
+\end{equation}
+
+\subsection*{Definition of Amino Acid Diversity}
+We use Shannon diversity to measure amino acid diversity in a sequence based on the occurrences of amino acids, defined as:
+
+\begin{equation}
+\label{eq:shannon}
+H = -\sum_{i=1}^{20} p_i \ln(p_i)\space,
+\end{equation}
+
+\noindent where $(p_i)$ is the number of occurrences of the $i$ amino acid.
+
+% \subsection*{Definition and implementation of $ \text{MMD}^2 $}
+% Maximum Mean Discrepancy (MMD) is a statistical test used to measure the difference between two probability distributions based on their embeddings. In this context, we use embeddings \( \mathbf{x} \) and \( \mathbf{y} \) generated by the pLM models, and we aim to assess the distribution drift between these two sets.
+
+% The $ \text{MMD}^2 $ between two distributions \( P \) and \( Q \) can be defined as:
+
+% \[
+% \text{MMD}^2(P, Q) = \left\| \mathbb{E}_{x \sim P}[\phi(x)] - \mathbb{E}_{y \sim Q}[\phi(y)] \right\|^2
+% \]
+
+% where \( \phi \) is a feature map that maps the input data into a reproducing kernel Hilbert space (RKHS).
+
+% Using the kernel trick, we can express the MMD in terms of kernel evaluations. Specifically, for a kernel \( k(x, y) \), the $ \text{MMD}^2 $ can be computed as:
+
+% \begin{align*}
+% \text{MMD}^2(P, Q) &= \mathbb{E}_{x_1, x_2 \sim P}[k(x_1, x_2)] + \mathbb{E}_{y_1, y_2 \sim Q}[k(y_1, y_2)] \\
+% &\quad - 2 \mathbb{E}_{x \sim P, y \sim Q}[k(x, y)]
+% \end{align*}
+
+% In this implementation, we employ the Radial Basis Function (RBF) kernel, defined as:
+
+% \[
+% k(x, y) = \exp\left(-\gamma \| x - y \|^2\right)
+% \]
+
+% where \( \gamma > 0 \) is a parameter that controls the width of the kernel.
+
+% The $ \text{MMD}^2 $ can be computed using the following Python code:
+
+% \begin{verbatim}
+% def compute_mmd(X, Y, gamma=1.0):
+%     Kxx = rbf_kernel(X, X, gamma=gamma)
+%     Kyy = rbf_kernel(Y, Y, gamma=gamma)
+%     Kxy = rbf_kernel(X, Y, gamma=gamma)
+%     MMD2 = Kxx.mean() + Kyy.mean() - 
+%     2 * Kxy.mean()
+%     return MMD2
+% \end{verbatim}
+
+% In this implementation, \( Kxx \) and \( Kyy \) are kernel matrices for embeddings \( \mathbf{x} \) and \( \mathbf{y} \), respectively. \( Kxy \)  is the kernel matrix between \( \mathbf{x} \) and \( \mathbf{y} \). The final output $ \text{MMD}^2 $ provides a measure of the distribution drift between the two sets of embeddings.
+
+\section*{Appendix D: Results of Full-parameter Fine-tuning}
+
+The results of the full-parameter fine-tuning with augmented data are shown in Figure \ref{fig:variation}. Results are less table compared to fix-backbone fine-tuning, suggesting potential overfitting introduced by full-parameter fine-tuning.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{variationlevel.pdf}
+  \caption{Performance of full-parameter fine-tuning pLMs with original and augmented data combined.}
+  \label{fig:variation}
+\end{figure}
+
+\section*{Appendix E: Ranking of Methods across various Low-Resource Scenarios}
+
+Figure \ref{fig:smallset} shows detailed rankings of different methods finetuned on 1\%-10\% and 20\%-50\% of the training data. 
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{smallset.pdf}
+  \caption{rankings of different methods finetuned on 1\%-10\% and 20\%-50\% of the training data.}
+  \label{fig:smallset}
+\end{figure*}
+
+\section*{Appendix F: Overall Performance on Variation Level}
+
+We perform all augmentation strategies on three pLMs across seven tasks. Results are shown in Figure \ref{fig:variationall}. Generally, substitution at 2-30\% variation levels yields the best results, with Esm2 consistently performs better except in Epitope prediction, where Esm2 performs the worst.
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{variation_all.pdf}
+  \caption{Performance of fine-tuning pLMs across variation levels. Dashed lines indicate the performance when using no augmentation. Stars denote the highest scores of corresponding models.}
+  \label{fig:variationall}
+\end{figure*}
+
+% \section*{Appendix F: $ \text{MMD}^2 $ between Training and Test Sets}
+
+% We quantify the distribution drift between the augmented training set and the test set by $ \text{MMD}^2 $~\cite{gretton2012mmd}. Lower $ \text{MMD}^2 $ values of ProtAug indicate that embeddings from its augmented training sets (ProtAug\_Esm and ProtAug\_GPT) cover more embeddings from the test set than other methods (Figure \ref{MMD2}).
+
+% \begin{figure}[ht]
+%   \centering
+%   \includegraphics[width=0.48\textwidth]{MMD2.pdf}
+%   \caption{$ \text{MMD}^2 $ between training and test sets across tasks.}
+%   \label{fig:MMD2}
+% \end{figure}
+
+% \section*{Appendix G: ProtAug Alleviates Overfitting}
+
+% Figure \ref{fig:loss_acc} shows that ProtAug, especially ProtAug\_Esm, produces relatively high validation accuracy in the two residue-level tasks, which are prone to overfitting. This suggests that ProtAug helps alleviate overfitting on test domains compared to other augmentation methods.
+
+\end{document}

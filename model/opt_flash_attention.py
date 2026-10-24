@@ -9,7 +9,12 @@ from einops import rearrange
 
 from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
 from flash_attn.bert_padding import unpad_input, pad_input
-from transformers.models.opt.modeling_opt import _make_causal_mask, _expand_mask
+try:
+    from transformers.models.opt.modeling_opt import _make_causal_mask, _expand_mask
+except ImportError:
+    from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+    _make_causal_mask = AttentionMaskConverter._make_causal_mask
+    _expand_mask = AttentionMaskConverter._expand_mask
 
 
 def _prepare_decoder_attention_mask_original(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):

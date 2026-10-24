@@ -1,11 +1,13 @@
 import os
+
+from datetime import timedelta
 import argparse
 import torch
 import warnings
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, strategies
 import pytorch_lightning.callbacks as plc
-from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger, TensorBoardLogger
 from model.blip2_stage1 import Blip2Stage1
 from data_provider.stage1_dm import Stage1DM, Stage1MixDM
 from model.dist_funs import MyDeepSpeedStrategy
@@ -13,13 +15,12 @@ from pathlib import Path
 
 
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
 ## for pyg bug
 warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
+warnings.filterwarnings('ignore', category=UserWarning, message='_BETA_TRANSFORMS_WARNING')
 ## for A5000 gpus
 torch.set_float32_matmul_precision('medium') # can be medium (bfloat16), high (tensorfloat32), highest (float32)
-
-
-
 
 def main(args):
     pl.seed_everything(args.seed)
@@ -37,25 +38,30 @@ def main(args):
     if args.mix_dataset:
         dm = Stage1MixDM(args.num_workers, args.batch_size, args.root, args)
         dm.init_tokenizer(model.blip2qformer.tokenizer, model.blip2qformer.plm_tokenizer)
+        dm.prepare_plm_embed_cache(model.blip2qformer.plm, is_saprot=False)
         model.swiss_val_match_loader, model.swiss_test_match_loader = dm.swiss_match_dataloader()
         model.onto_val_match_loader, model.onto_test_match_loader = dm.onto_match_dataloader()
     else:
         dm = Stage1DM(args.num_workers, args.batch_size, args.root, args)
         dm.init_tokenizer(model.blip2qformer.tokenizer, model.blip2qformer.plm_tokenizer)
+        dm.prepare_plm_embed_cache(model.blip2qformer.plm, is_saprot=False)
         model.val_match_loader, model.test_match_loader = dm.match_dataloader()
 
     callbacks = []
-    callbacks.append(plc.ModelCheckpoint(dirpath="all_checkpoints/"+args.filename+"/", 
-                                         filename='{epoch:02d}', 
-                                         every_n_epochs=args.save_every_n_epochs, 
-                                         save_top_k=-1,
-                                         save_on_train_epoch_end=True))
-    
+    epoch_ckpt_callback = plc.ModelCheckpoint(
+        dirpath=f"all_checkpoints/{args.filename}/",
+        filename='{epoch:02d}',
+        every_n_epochs=args.save_every_n_epochs,
+        save_top_k=-1,
+        save_last=False,
+    )
+    callbacks.append(epoch_ckpt_callback)
     
     if len(args.devices.split(',')) > 1:
         if args.strategy == 'ddp':
-            find_unused_parameters = (not args.ptm) or (not args.lm)
-            strategy = strategies.DDPStrategy(start_method='spawn', find_unused_parameters=find_unused_parameters)
+            # find_unused_parameters = (not args.ptm) or (not args.lm)
+            # strategy = strategies.DDPStrategy(start_method='spawn', find_unused_parameters=find_unused_parameters)
+            pass
         elif args.strategy == 'deepspeed':
             # strategy = strategies.DeepSpeedStrategy(stage=2)
             strategy = MyDeepSpeedStrategy(stage=2)
@@ -64,23 +70,38 @@ def main(args):
         # strategy = strategies.FSDPStrategy()
     else:
         strategy = None
-        args.devices = eval(args.devices)
-        print(args.devices)
+        args.devices = [0]
+        os.environ['MASTER_ADDR'] = 'localhost'  # Address of the master node (can be any node)
+        os.environ['MASTER_PORT'] = '12358'  # Port for communication
+        os.environ['WORLD_SIZE'] = '1'  # Total number of processes
+        os.environ['RANK'] = '0'  # Rank of the current process (0, 1, 2, or 3 in this example)
+        torch.distributed.init_process_group('nccl',init_method='env://', timeout=timedelta(seconds=7200))
+        #print(args.devices)
     if args.use_wandb_logger:
         Path(f'./all_checkpoints/{args.filename}/wandb').mkdir(parents=True, exist_ok=True)
         logger = WandbLogger(project=args.filename, save_dir=f'./all_checkpoints/{args.filename}/')
+    elif args.use_tb_logger:
+        logger = TensorBoardLogger(save_dir=f'./all_checkpoints/{args.filename}/tb_logs/')
     else:
         logger = CSVLogger(save_dir=f'./all_checkpoints/{args.filename}/')
-    trainer = Trainer(accelerator=args.accelerator,
-                     devices=args.devices,
-                     precision=args.precision,
-                     max_epochs=args.max_epochs,
-                     check_val_every_n_epoch=args.check_val_every_n_epoch, 
-                     callbacks=callbacks, 
-                     strategy=strategy, 
-                     logger=logger,
-                    #  limit_val_batches=2,
-                     )
+
+
+    trainer_args = dict(
+        accelerator=args.accelerator,
+        devices=args.devices,
+        precision=args.precision,
+        max_epochs=args.max_epochs,
+        check_val_every_n_epoch=args.check_val_every_n_epoch,
+        callbacks=callbacks,
+        logger=logger,
+        strategy=strategy,
+        # limit_val_batches=2,
+    )
+    # if strategy is not None:
+    #     trainer_args['strategy'] = strategy
+
+    trainer = Trainer(**trainer_args)
+
     if args.mode == 'train':
         trainer.fit(model, datamodule=dm)
     elif args.mode == 'eval':
@@ -96,14 +117,17 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--mode', type=str, default='train')
     parser.add_argument('--strategy', type=str, default='deepspeed')
+    parser.add_argument('--test', type=int, default=0, help='for debugging, use a smaller dataset')
+    parser.add_argument('--suffix', type=str, default='', help='custom dataset')
     
     ## trainer arguments
     parser.add_argument('--accelerator', type=str, default='gpu')
-    parser.add_argument('--devices', type=str, default='6,7')
+    parser.add_argument('--devices', type=str, default='0,1')
     parser.add_argument('--precision', type=str, default='bf16')
     parser.add_argument('--max_epochs', type=int, default=20)
-    parser.add_argument('--check_val_every_n_epoch', type=int, default=1)
+    parser.add_argument('--check_val_every_n_epoch', type=int, default=5)
     parser.add_argument('--use_wandb_logger', action='store_true', default=False)
+    parser.add_argument('--use_tb_logger', action='store_true', default=False)
     parser.add_argument('--mix_dataset', action='store_true', default=False)
     parser = Blip2Stage1.add_model_specific_args(parser)  # add model args
     parser = Stage1DM.add_model_specific_args(parser)

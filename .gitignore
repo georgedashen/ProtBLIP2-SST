@@ -1,0 +1,50 @@
+# Large artifacts / local data
+all_checkpoints/
+data/
+!data/.gitignore
+!all_checkpoints/.gitignore
+
+# Logs and runtime dumps
+*.log
+nohup.out
+*.out
+
+# Python / IDE
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.*
+.vscode/
+.cursor/
+.idea/
+.DS_Store
+
+# Archives and personal documents
+*.zip
+*.pdf
+*.docx
+*.R
+draft*/
+
+# Local notebooks / misc
+*.ipynb_checkpoints/
+target_*
+
+# Keep paper source, not compiled junk
+paper/**/*.aux
+paper/**/*.bbl
+paper/**/*.blg
+paper/**/*.log
+paper/**/*.out
+paper/**/*.synctex.gz
+
+# Reference PDFs under manuscripts (keep tex/bib/md only)
+manuscripts/*.pdf

@@ -1,0 +1,330 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage[numbers]{natbib}
+\setcitestyle{square}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage[hyphens]{url}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{hyperref}
+\PassOptionsToPackage{colorlinks=true,linkcolor=blue,citecolor=blue}{hyperref}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\newcommand{\best}[1]{\textbf{#1}}
+\newcommand{\secondbest}[1]{\underline{#1}}
+
+\begin{document}
+
+\title{ProtBLIP2-SST: Protein Function Prediction via BLIP-2 with Sequence, Structure, and Text}
+
+\author{\IEEEauthorblockN{Anonymous Authors}}
+
+\maketitle
+
+\begin{abstract}
+Protein function prediction traditionally relies on structured Gene Ontology (GO) labels or multi-label classifiers that cannot flexibly describe homology, subcellular location, and free-text functional narratives in a single output.
+We present \textbf{ProtBLIP2-SST}, a BLIP-2-style framework that bridges protein \textbf{S}equence, \textbf{S}tructure, and \textbf{T}ext (SST) for open-ended caption generation.
+A frozen protein language model (PLM) produces per-residue embeddings; an 8-query Q-Former aligns them with a biomedical BERT text encoder via contrastive, matching, and captioning objectives (stage~1); Galactica-1.3B with mid-layer LoRA then generates Swiss-Prot-style descriptions (stage~2).
+We keep the Q-Former and decoder fixed and swap only the PLM backbone---ESM-2 (sequence-only), SaProt (interleaved amino-acid and Foldseek 3Di tokens from AlphaFold DB), or ProstT5 (bilingual sequence--structure T5)---enabling controlled SST comparisons.
+On an aligned 9{,}239-sample test split, SaProt-650M attains 33.07\% exact match, 58.53 BLEU-4, 68.23 ROUGE-L, and 69.54 METEOR, outperforming ESM-2-650M under identical training (32.83\% / 58.12 / 67.77 / 69.10) and improving stage-1 retrieval average accuracy to 90.83 versus 89.92.
+Structure conditioning reduces fold-specific enzyme confusions, while sequence-only encoders remain stronger on short homology labels.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Protein function prediction, multi-modal learning, protein-to-text generation, BLIP-2, structure-aware protein language models
+\end{IEEEkeywords}
+
+%==============================================================================
+\section{Introduction}
+\label{sec:intro}
+%==============================================================================
+
+Computational protein function prediction is dominated by GO-centric multi-label classification~\cite{gene2023go,zhou2019cafa,oliveira2023temprot}.
+Although accurate for curated ontologies, this formulation cannot produce novel textual hypotheses, combine function with homology or subcellular context in one response, or leverage the rich free-text annotations in UniProt/Swiss-Prot~\cite{bairoch2000swissprot,uniprot2023}.
+Large language models (LLMs) excel at biomedical text~\cite{zhou2024LLMcomprehensive,taylor2022galactica} but cannot directly read proteins: amino-acid strings are not natural language, and three-dimensional structure or interaction patterns have no faithful textual serialization.
+
+Protein language models (PLMs) such as ESM-2~\cite{lin2023esm2} learn evolutionary-scale sequence representations.
+AlphaFold DB~\cite{varadi2022alphafolddb} makes proteome-wide structures available and motivates structure-aware PLMs: SaProt interleaves residue and Foldseek 3Di tokens~\cite{su2023saprot,vankempen2024foldseek}, while ProstT5 translates between amino-acid and structure vocabularies~\cite{heinzinger2024prostt5}.
+Contrastive protein--text models (ProtST~\cite{xu2023protst}, ProteinChat~\cite{guo2023proteinchat}, ProTrek~\cite{su2025protrek}) improve retrieval or chat interfaces but typically stop short of open-ended caption generation with a general LLM decoder.
+ProtT3~\cite{liu2024prott3} adapts BLIP-2~\cite{li2023blip2} for two-stage protein-to-text training; Prot2Text-V2~\cite{fei2025prot2text} replaces the Q-Former with hybrid sequence-level contrastive alignment (H-SCALE) and scales the decoder to LLaMA-3.1-8B.
+
+Three gaps motivate ProtBLIP2-SST.
+\textbf{(i)~Modality fragmentation.} Existing LLM-integrated pipelines align sequence with text or structure with text, but rarely unify sequence, structure, and text under one generative framework with interchangeable encoders.
+\textbf{(ii)~Implicit, task-specific understanding.} PLM embeddings plus task-specific heads encode function only indirectly; aligning protein states with textual annotations makes functional semantics explicit and reusable across downstream tasks.
+\textbf{(iii)~Training cost.} Frozen PLM forward passes dominate wall-clock time; reproducible multi-encoder studies require cached embeddings and efficient attention kernels.
+
+We address these gaps with a modular BLIP-2 SST design: the same 8-query Q-Former, biomedical BERT text tower, and Galactica-1.3B decoder are shared; only the frozen PLM and dataset suffix change.
+Captions follow Swiss-Prot field structure (\texttt{FUNCTION:}, \texttt{SUBCELLULAR LOCATION:}, \texttt{SIMILARITY:}), treating function prediction as conditional text generation rather than fixed-label classification.
+
+\textbf{Contributions.}
+(1)~ProtBLIP2-SST, an encoder-agnostic BLIP-2 framework for SST protein captioning with ESM-2, SaProt, and ProstT5 backbones.
+(2)~An AlphaFold-filtered Swiss-Prot V3 corpus ($\sim$411K train / 9.2K test proteins) with paired \texttt{\_afdbfilt} (sequence) and \texttt{\_saprot} (sequence+structure) splits.
+(3)~Systematic stage-1 retrieval and stage-2 caption benchmarks on a 9{,}239-sample aligned test set, showing SaProt-650M as the strongest variant under matched training.
+(4)~Parallel cached PLM embeddings and FlashAttention-accelerated training for reproducible multi-encoder experiments.
+
+%==============================================================================
+\section{Related Work}
+\label{sec:related}
+%==============================================================================
+
+\paragraph{Protein language models.}
+ESM-2 scales masked language modeling on residue sequences~\cite{lin2023esm2,rives2021biological}.
+SaProt augments tokens with structure-aware 3Di symbols derived from predicted coordinates~\cite{su2023saprot}.
+ProstT5 treats sequence and structure as a bilingual T5 translation task~\cite{heinzinger2024prostt5,elnaggar2021prottrans}.
+
+\paragraph{Protein--text modeling.}
+ProtST and ProteinChat project proteins into text space for retrieval or instruction tuning~\cite{xu2023protst,guo2023proteinchat}.
+ProtT3 introduces Q-Former-based stage-1 alignment and Galactica fine-tuning for captioning, QA, and retrieval~\cite{liu2024prott3}.
+Prot2Text-V2 uses H-SCALE and a larger instruction-tuned decoder~\cite{fei2025prot2text}.
+ProTrek performs trimodal contrastive search without open-ended generation~\cite{su2025protrek}.
+ProtBLIP2-SST differs by holding the BLIP-2 skeleton fixed and isolating the effect of SST encoders under identical generative training.
+
+\paragraph{Vision--language pre-training.}
+BLIP-2 bridges frozen image encoders and LLMs with a lightweight Q-Former trained for representation learning then generative conditioning~\cite{li2023blip2}.
+We transpose the image encoder to a frozen PLM and the LLM to Galactica (OPT architecture) with mid-layer LoRA~\cite{hu2022lora,taylor2022galactica}.
+
+%==============================================================================
+\section{Materials and Methods}
+\label{sec:methods}
+%==============================================================================
+
+\subsection{Overview}
+
+ProtBLIP2-SST follows a two-stage curriculum (Figure~\ref{fig:architecture}).
+Given protein input, a frozen PLM yields hidden states $\mathbf{H}_p \in \mathbb{R}^{L \times d_p}$, where $L$ is the padded sequence length ($L \le 1024$) and $d_p$ is the PLM width (480 for 35M-class encoders; 1280 for 650M ESM/SaProt).
+Layer normalization is applied per residue before cross-attention.
+An 8-query Q-Former cross-attends to $\mathbf{H}_p$ and produces protein queries $\mathbf{Z}_p \in \mathbb{R}^{8 \times d_q}$ with $d_q = 768$.
+A biomedical BERT encoder processes text captions and participates in stage-1 alignment losses.
+In stage~2, a linear projection \texttt{opt\_proj} maps $\mathbf{Z}_p$ into the 2048-dimensional embedding space of Galactica-1.3B; projected queries are prepended to prompt and caption tokens, and the language-modeling loss is applied only to caption spans.
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.95\linewidth}{\centering\small
+    \textbf{Stage~1:} Frozen PLM $\rightarrow$ LN $\rightarrow$ Q-Former (8 queries) $\leftrightarrow$ BiomedBERT\\
+    Losses: PTC + PTM + PCap \quad
+    \textbf{Stage~2:} Q-Former $\rightarrow$ opt\_proj $\rightarrow$ Galactica-1.3B + mid-LoRA\\
+    Prompt: \texttt{Swiss-Prot description:}
+  }}
+  \caption{ProtBLIP2-SST architecture. Only the PLM backbone and dataset suffix (\texttt{\_saprot} vs.\ \texttt{\_afdbfilt}) change across SST variants; Q-Former, text encoder, and decoder are shared in design.}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{Dataset}
+
+We build on Swiss-Prot V3 from ProtT3~\cite{liu2024prott3}.
+Proteins are retained only when AlphaFold DB v4 provides a predicted structure, yielding paired sequence--structure--text triplets.
+Each record contains a protein sequence, Foldseek-derived 3Di tokens (for structure-aware splits), and a composite caption with \texttt{FUNCTION:}, \texttt{SUBCELLULAR LOCATION:}, and \texttt{SIMILARITY:} fields when available.
+
+Two suffix variants are released:
+\texttt{\_afdbfilt} uses amino-acid tokenization only (ESM-2, ProstT5);
+\texttt{\_saprot} uses SaProt interleaved amino-acid/lowercase-3Di tokenization.
+Split sizes in our release are 410{,}925 train, 9{,}236 validation, and 9{,}239 test proteins per suffix.
+For fair cross-encoder comparison at stage~2, we evaluate on an \textbf{aligned 9{,}239-sample test subset} with identical captions and sample order across \texttt{test\_set\_saprot.json} and \texttt{test\_set\_afdbfilt.json}.
+
+Stage~2 uses the prompt \texttt{Swiss-Prot description:} followed by the target caption (\texttt{text\_max\_len}${=}128$, \texttt{prot\_max\_len}${=}1024$).
+
+\subsection{Protein Encoders}
+
+\paragraph{ESM-2 (sequence-only).}
+We use \texttt{fredzzp/esm2\_t12\_35M\_UR50D} (35M) and \texttt{fredzzp/esm2\_t33\_650M\_UR50D} (650M) with PubMedBERT as the text tower~\cite{liu2024prott3}.
+
+\paragraph{SaProt (sequence + structure).}
+SaProt checkpoints \texttt{SaProt\_35M\_AF2} and \texttt{SaProt\_650M\_AF2} interleave amino-acid tokens with lowercase 3Di structure tokens from AlphaFold predictions~\cite{su2023saprot}.
+BiomedBERT (\texttt{BiomedNLP-BiomedBERT-base-uncased-abstract}) serves as the text encoder.
+
+\paragraph{ProstT5 (bilingual SST).}
+ProstT5 (\texttt{Rostlab/ProstT5}, $\sim$1.5B parameters) encodes structure-aware representations via \texttt{<AA2fold>} / \texttt{<fold2AA>} task prefixes~\cite{heinzinger2024prostt5}.
+
+All PLMs are frozen (\texttt{plm\_tune=freeze}) during both stages; trainable capacity resides in the Q-Former, projection heads, and (stage~2) LoRA adapters.
+
+\subsection{Stage 1: Protein--Text Alignment}
+
+Stage~1 optimizes three objectives following ProtT3~\cite{liu2024prott3}:
+\textbf{PTC} (protein--text contrastive), \textbf{PTM} (protein--text matching), and \textbf{PCap} (caption language modeling).
+Let $\mathbf{z}_p$ and $\mathbf{z}_t$ denote pooled protein and text embeddings after Q-Former/BERT projection.
+PTC uses an InfoNCE-style loss with temperature $\tau{=}0.1$:
+\begin{equation}
+  \mathcal{L}_{\text{PTC}} = -\frac{1}{2N}\sum_{i=1}^{N}\left[
+    \log \frac{e^{\mathrm{sim}(\mathbf{z}_p^{(i)}, \mathbf{z}_t^{(i)})/\tau}}{\sum_j e^{\mathrm{sim}(\mathbf{z}_p^{(i)}, \mathbf{z}_t^{(j)})/\tau}}
+    + \log \frac{e^{\mathrm{sim}(\mathbf{z}_t^{(i)}, \mathbf{z}_p^{(i)})/\tau}}{\sum_j e^{\mathrm{sim}(\mathbf{z}_t^{(i)}, \mathbf{z}_p^{(j)})/\tau}}
+  \right].
+\end{equation}
+PTM is a binary matching loss over hard negatives; PCap is standard masked language modeling on caption tokens conditioned on protein queries.
+
+Retrieval evaluation uses PTC embeddings for coarse search and PTM re-ranking over the top-128 candidates (\texttt{rerank\_cand\_num}${=}128$), reporting accuracy (Acc) and recall at 20 (Rec@20) for protein-to-text and text-to-protein directions on both the validation batch (\emph{in-batch}) and the held-out test set.
+
+\subsection{Stage 2: Caption Generation}
+
+Galactica-1.3B~\cite{taylor2022galactica} is loaded via \texttt{OPTForCausalLM}.
+We apply \texttt{mid\_lora} ($r{=}8$, $\alpha{=}16$, dropout $0.1$) to attention projections (\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, \texttt{out\_proj}) and feed-forward layers (\texttt{fc1}, \texttt{fc2}); base LLM weights remain frozen~\cite{hu2022lora}.
+Stage~1 Q-Former weights initialize stage~2; optionally, PLM LayerNorm weights can be loaded from the stage~1 checkpoint (\texttt{stage1\_path}).
+
+Inference uses beam search with \texttt{num\_beams}${=}5$, \texttt{max\_inference\_len}${=}128$ new tokens, and \texttt{caption\_eval\_epoch}${=}10$ (metrics computed at epoch~10).
+
+\subsection{Evaluation Metrics}
+
+\textbf{Stage~1:} Acc and Rec@20 after PTM re-ranking with 128 candidates, averaged over protein-to-text and text-to-protein directions on in-batch and test-set retrieval.
+
+\textbf{Stage~2:} Exact match (EM), BLEU-2/4~\cite{papineni2002bleu}, ROUGE-1/2/L~\cite{lin2004rouge}, and METEOR~\cite{banerjee2005meteor} between generated and reference captions on the aligned 9{,}239 test proteins.
+
+\subsection{Implementation Details}
+
+All experiments run on a server with two Intel Xeon Platinum 8375C CPUs (64 cores / 128 threads total), 503~GiB RAM, and two NVIDIA A100 80GB PCIe GPUs.
+Training uses PyTorch Lightning with DeepSpeed stage~2, bf16 mixed precision (\texttt{bf16-mixed}), FlashAttention for ESM/SaProt/OPT, and 8 dataloader workers unless noted.
+
+\textbf{Stage~1 hyperparameters} (from \texttt{stage1sa.py} / \texttt{stage1.py}, shared across encoders):
+AdamW with \texttt{init\_lr}${=}10^{-4}$, \texttt{weight\_decay}${=}0.05$, linear warmup cosine schedule (\texttt{warmup\_steps}${=}1000$, \texttt{min\_lr}${=}10^{-5}$);
+\texttt{batch\_size}${=}32$, \texttt{match\_batch\_size}${=}64$, \texttt{num\_query\_token}${=}8$, \texttt{max\_epochs}${=}50$, \texttt{seed}${=}42$.
+SaProt/ESM stage~1 uses \texttt{suffix}\texttt{\_saprot} or \texttt{\_afdbfilt} respectively; frozen PLM embeddings are precomputed with parallel multi-GPU cache builders when \texttt{use\_cached\_plm\_embeds=True}.
+
+\textbf{Stage~2 hyperparameters} (from \texttt{stage2sa.py}, verified in \texttt{all\_checkpoints/stage2\_main/sa\_650m/}):
+AdamW \texttt{init\_lr}${=}10^{-4}$, same scheduler as stage~1;
+\texttt{batch\_size}${=}32$, \texttt{inference\_batch\_size}${=}4$, \texttt{max\_epochs}${=}10$, \texttt{llm\_tune=mid\_lora};
+\texttt{text\_max\_len}${=}128$, \texttt{prot\_max\_len}${=}1024$.
+Checkpoints saved every 10 epochs; reported numbers use epoch~9/10 models.
+
+%==============================================================================
+\section{Results}
+\label{sec:results}
+%==============================================================================
+
+\subsection{Stage 1: Protein--Text Retrieval}
+
+Table~\ref{tab:stage1-main} summarizes stage-1 retrieval after 50 epochs.
+Structure-aware encoders improve test-set Acc and Rec@20 over ESM-2 at matched parameter scales.
+SaProt-650M achieves the highest average score (90.83), followed by ProstT5-1.5B (90.03) and ESM-2-650M (89.92).
+SaProt-35M already surpasses ESM-2-35M on test Acc (+1.86 / +1.91 points protein-to-text / text-to-protein), indicating that structure tokens help generalization beyond in-batch retrieval.
+
+\begin{table*}[t]
+  \caption{Stage-1 protein--text retrieval. \emph{In-batch} metrics are computed on validation mini-batches; \emph{test set} metrics use the full 9{,}239-protein test split with PTM re-ranking over 128 PTC candidates. Average is the mean of all eight Acc/Rec@20 numbers shown.}
+  \label{tab:stage1-main}
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{l cc cc cc cc c}
+    \toprule
+    & \multicolumn{2}{c}{In-batch P$\rightarrow$T} & \multicolumn{2}{c}{In-batch T$\rightarrow$P}
+    & \multicolumn{2}{c}{Test P$\rightarrow$T} & \multicolumn{2}{c}{Test T$\rightarrow$P} & Average \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+    Encoder & Acc & R@20 & Acc & R@20 & Acc & R@20 & Acc & R@20 & \\
+    \midrule
+    ESM-2 35M   & 96.16 & 99.88 & 96.02 & 99.81 & 64.48 & 93.97 & 63.56 & 93.62 & 88.44 \\
+    ESM-2 650M  & 97.00 & 99.86 & 97.01 & 99.88 & 67.68 & 95.14 & 67.49 & 95.27 & 89.92 \\
+    ProstT5 1.5B & 97.37 & 99.94 & 97.14 & 99.91 & 66.75 & 96.21 & 66.99 & 95.89 & 90.03 \\
+    SaProt 35M  & 97.10 & 99.92 & 96.72 & 99.88 & 66.34 & 95.56 & 65.47 & 95.22 & 89.53 \\
+    SaProt 650M & \best{97.94} & \best{99.96} & \best{97.64} & 99.91 & \best{69.28} & \best{96.75} & \best{68.70} & \best{96.49} & \best{90.83} \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\begin{table}[t]
+  \caption{Stage-1 ablation on SaProt-35M (PTM / caption LM losses). Rows marked ``---'' denote runs in progress at submission time.}
+  \label{tab:stage1-ablation}
+  \centering
+  \small
+  \begin{tabular}{l c}
+    \toprule
+    Variant & Test avg. \\
+    \midrule
+    SaProt 35M (full: PTM+LM) & 89.53 \\
+    SaProt 35M w/o PTM & --- \\
+    SaProt 35M w/o LM  & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Strong in-batch Acc ($>$96\%) with lower test Acc ($\sim$65--69\%) reflects the standard train/test gap in cross-modal retrieval; Rec@20 remains above 93\% on the test set, indicating that correct matches are usually ranked near the top even when Acc@1 fails.
+
+\subsection{Stage 2: Protein Caption Generation}
+
+Table~\ref{tab:stage2-main} reports caption metrics on the aligned 9{,}239 test set (re-scored from \texttt{all\_checkpoints/stage2\_main/} predictions).
+ProtBLIP2-SST with SaProt-650M achieves the best BLEU, ROUGE, and METEOR among models trained under our framework; ESM-2-650M (ProtT3-equivalent backbone) is close but consistently lower.
+SaProt-35M improves over ESM-2-35M on BLEU-4 (+0.63), ROUGE-L (+0.97), and METEOR (+0.63) with comparable exact match (30.59 vs.\ 30.33).
+
+\begin{table}[t]
+  \caption{Stage-2 Swiss-Prot captioning on the aligned 9{,}239 test set. ProtBLIP2-SST denotes our BLIP-2 SST pipeline; ProtT3 rows use the same Q-Former setup with ESM-2 encoders (re-scored local checkpoints).}
+  \label{tab:stage2-main}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{l r r r r r r r}
+    \toprule
+    Model & EM & B-2 & B-4 & R-1 & R-2 & R-L & Mtr \\
+    \midrule
+    LoRA finetune (Galactica) & 13.49 & 42.48 & 37.79 & 44.42 & 34.73 & 42.46 & 48.27 \\
+    ProtT3 (ESM-2 35M) & 30.33 & 57.86 & 54.74 & 65.60 & 59.28 & 64.29 & 65.99 \\
+    ProtBLIP2-SST (SaProt 35M) & 30.59 & 58.33 & 55.37 & 66.50 & 60.51 & 65.26 & 66.62 \\
+    ProtT3 (ESM-2 650M) & 32.83 & 61.01 & 58.12 & 68.94 & 63.15 & 67.77 & 69.10 \\
+    Prot2Text-V2$^{*}$ & \best{39.16} & 46.67 & 43.34 & 57.24 & 50.17 & 55.39 & 64.58 \\
+    ProtBLIP2-SST (SaProt 650M) & \secondbest{33.07} & \best{61.41} & \best{58.53} & \best{69.38} & \best{63.68} & \best{68.23} & \best{69.54} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent$^{*}$Prot2Text-V2 uses ESM-3B + LLaMA-3.1-8B-Instruct on ProtT3's 10{,}000-protein test split~\cite{fei2025prot2text}; higher exact match but lower n-gram overlap metrics indicate different error profiles and are not directly comparable to our 9{,}239 aligned split.
+
+Table~\ref{tab:stage2-ablation} ablates alignment and architectural choices at 35M scale.
+Q-Former alignment (ProtT3 / ProtBLIP2-SST) substantially outperforms feeding unaligned ESM-2 hidden states directly to Galactica.
+Simple LoRA fine-tuning of Galactica on raw amino-acid strings reaches only 24.4\% exact match, and zero-shot / marker-prompt baselines fail entirely.
+
+\begin{table}[t]
+  \caption{Stage-2 ablation at 35M on the aligned test set.}
+  \label{tab:stage2-ablation}
+  \centering
+  \small
+  \begin{tabular}{l r r r r}
+    \toprule
+    Variant & EM & B-4 & R-L & Mtr \\
+    \midrule
+    No finetune (marker + AA) & 0.00 & 0.58 & 6.20 & 5.11 \\
+    LoRA finetune (raw AA) & 24.43 & 37.15 & 53.05 & 57.40 \\
+    LoRA finetune (marker + AA) & 24.22 & 36.97 & 53.01 & 57.16 \\
+    ESM-2 hidden states (no alignment) & 30.92 & 43.66 & 62.91 & 64.51 \\
+    ProtT3 / ESM-2 + 8 query tokens & 30.33 & 54.74 & 64.29 & 65.99 \\
+    ProtBLIP2-SST / SaProt + 8 queries & \best{30.59} & \best{55.37} & \best{65.26} & \best{66.62} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Qualitative Analysis}
+
+Head-to-head analysis on all 9{,}239 test samples (\texttt{analysis/saprot\_vs\_prott3\_stage2\_analysis.md}) shows SaProt wins on more individual captions than ESM-2 at both 35M (+24 sole exact-match wins) and 650M (+22), despite modest aggregate metric gaps.
+SaProt excels when \texttt{FUNCTION:} disambiguation requires structural context (e.g., correcting pathway or methyltransferase substrate errors); ESM-2 remains stronger on short \texttt{SIMILARITY:} family labels driven by sequence motifs (HSP70, asp23).
+Both models inherit Galactica's bias to open with \texttt{FUNCTION:} even when the reference begins with \texttt{SIMILARITY:}, suggesting future work on field-balanced decoding.
+
+%==============================================================================
+\section{Discussion and Conclusion}
+\label{sec:discussion}
+%==============================================================================
+
+ProtBLIP2-SST demonstrates that BLIP-2-style bridging is \emph{encoder-agnostic}: the same Q-Former and Galactica decoder accommodate sequence-only and structure-aware PLMs without architectural redesign.
+SaProt's 3Di tokens yield consistent gains in stage-1 retrieval and stage-2 caption overlap metrics, with complementary strengths relative to ESM-2 across caption fields.
+Cached PLM embeddings reduce repeated forward-pass cost and make multi-encoder benchmarking practical on dual-GPU nodes.
+
+\textbf{Limitations.}
+Comparisons conflate encoder architecture with input representation (interleaved AA+3Di vs.\ amino acids only).
+SaProt ablations without PTM or LM losses and full ProstT5 stage-2 numbers remain incomplete.
+Decoder scaling (H-SCALE, larger instruction models) is unexplored within ProtBLIP2-SST.
+External baselines use different test splits and backbones, limiting direct ranking.
+
+\textbf{Future work} includes completing loss ablations, field-stratified training objectives, ProstT5 caption benchmarks, and expert evaluation on function-critical predictions.
+
+In summary, ProtBLIP2-SST unifies Sequence, Structure, and Text for protein function captioning through swappable frozen PLMs and a shared BLIP-2 generative head, with SaProt-650M as the strongest variant in our controlled study.
+
+%==============================================================================
+\section*{Acknowledgments}
+%==============================================================================
+Omitted for double-blind review.
+
+\bibliographystyle{ieeetr}
+\bibliography{reference}
+
+\end{document}

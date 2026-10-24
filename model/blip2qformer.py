@@ -19,6 +19,7 @@ from lavis.models.blip_models.blip_outputs import BlipOutput
 from model.blip2 import Blip2Base
 from model.help_funcs import pad_and_concat
 from model.dist_funs import pl_concat_all_gather
+from model.plm_encode import encode_prot_hidden
 
 
 
@@ -114,20 +115,17 @@ class Blip2Qformer(Blip2Base):
         prot_batch, text_batch = batch
         ## v2: gather results from all gpus
         ###============== Image-text Contrastive ===================###
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = prot_embeds.last_hidden_state
-        if self.plm_tune == 'freeze':
-            prot_embeds = prot_embeds.detach()
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
         batch_size = prot_embeds.shape[0]
         device = prot_embeds.device
-
-        prot_embeds = self.ln_layer(prot_embeds)
         
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             use_cache=True,
             return_dict=True,
         )
@@ -144,7 +142,7 @@ class Blip2Qformer(Blip2Base):
         if self.ptm:
             ## not aggregate global tensor because of their different shapes
             prot_embeds_world = pl_concat_all_gather(prot_embeds)
-            prot_mask_world = pl_concat_all_gather(prot_batch.attention_mask)
+            prot_mask_world = pl_concat_all_gather(prot_mask)
             text_ids_world = pl_concat_all_gather(text_batch.input_ids)
             text_mask_world = pl_concat_all_gather(text_batch.attention_mask)
             with torch.no_grad():
@@ -190,7 +188,7 @@ class Blip2Qformer(Blip2Base):
             attention_mask_all = torch.cat([query_mask_ptm, text_mask_all], dim=1)
 
             prot_embeds_all = torch.cat([prot_embeds, prot_embeds_neg, prot_embeds], dim=0)  # pos, neg, pos
-            prot_mask_all = torch.cat([prot_batch.attention_mask, prot_mask_neg, prot_batch.attention_mask], dim=0)
+            prot_mask_all = torch.cat([prot_mask, prot_mask_neg, prot_mask], dim=0)
             
             output_ptm = self.Qformer.bert(
                 text_ids_all,
@@ -241,16 +239,14 @@ class Blip2Qformer(Blip2Base):
         )
 
     def prot_forward(self, prot_batch):
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = prot_embeds.last_hidden_state
-        if self.plm_tune == 'freeze':
-            prot_embeds = prot_embeds.detach()
-        prot_embeds = self.ln_layer(prot_embeds)
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             use_cache=True,
             return_dict=True,
         )

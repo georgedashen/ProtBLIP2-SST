@@ -16,6 +16,7 @@ def forward(
     encoder_attention_mask: Optional[torch.FloatTensor] = None,
     past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
     output_attentions: Optional[bool] = False,
+    bfloat16: Optional[bool] = True,
 ) -> Tuple[torch.Tensor]:
     mixed_query_layer = self.query(hidden_states)
     assert encoder_hidden_states is None, "Cross-attention is not supported for ESM"
@@ -41,9 +42,12 @@ def forward(
     bsz, q_len, _ = hidden_states.size()
     nheads = qkv.shape[-2]
     x = rearrange(qkv, "b s three h d -> b s (three h d)")
-    x_unpad, indices, cu_q_lens, max_s = unpad_input(x, key_padding_mask)
+    x_unpad, indices, cu_q_lens, max_s, _ = unpad_input(x, key_padding_mask)
     x_unpad = rearrange(x_unpad, "nnz (three h d) -> nnz three h d", three=3, h=nheads)
-    x_unpad = x_unpad.to(torch.bfloat16)
+    if bfloat16:
+        x_unpad = x_unpad.to(torch.bfloat16)
+    else:
+        x_unpad = x_unpad.to(torch.float16)
     output_unpad = flash_attn_varlen_qkvpacked_func(x_unpad, cu_q_lens, max_s, self.dropout.p if self.training else 0.0, softmax_scale=1, causal=False)
     if False:
         outputs = rearrange(pad_input(rearrange(output_unpad, "nnz h d -> nnz (h d)"), indices, bsz, q_len), "b s (h d) -> b s h d", h=nheads)
@@ -238,4 +242,85 @@ def replace_flash_attn_with_esm_attn():
     transformers.models.esm.modeling_esm.EsmSelfAttention.forward = forward_original
 
 if __name__ == '__main__':
-    pass
+    import time
+    # set seed
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+    class DummyESMSelfAttention(nn.Module):
+        def __init__(self, embed_dim=256, num_heads=4, seq_len=128):
+            super().__init__()
+            self.query = nn.Linear(embed_dim, embed_dim)
+            self.key = nn.Linear(embed_dim, embed_dim)
+            self.value = nn.Linear(embed_dim, embed_dim)
+            self.dropout = nn.Dropout(0.1)
+            self.attention_head_size = embed_dim // num_heads
+            self.all_head_size = embed_dim
+            self.num_attention_heads = num_heads
+            self.is_decoder = False
+            self.position_embedding_type = "rotary"
+            self.training = True
+
+        def transpose_for_scores(self, x):
+            # [batch, seq, embed] -> [batch, num_heads, seq, head_dim]
+            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+            x = x.view(*new_x_shape)
+            return x.permute(0, 2, 1, 3)
+
+        def rotary_embeddings(self, q, k):
+            # Dummy rotary embedding (no-op for testing)
+            return q, k
+
+    # Settings
+    batch_size = 8
+    seq_len = 2048
+    embed_dim = 128
+    num_heads = 8
+
+    # Dummy input
+    #hidden_states = torch.randn(batch_size, seq_len, embed_dim).to(torch.bfloat16).cuda()
+    hidden_states = torch.randn(batch_size, seq_len, embed_dim).cuda()
+    attention_mask1 = torch.ones(batch_size, seq_len, dtype=torch.bool).cuda()
+    attention_mask2 = torch.zeros(batch_size, num_heads, seq_len, seq_len).cuda()
+    #attention_mask = None
+
+    # Instantiate attention module
+    attn = DummyESMSelfAttention(embed_dim, num_heads, seq_len).cuda()
+    #attn = DummyESMSelfAttention(embed_dim, num_heads, seq_len).to(torch.bfloat16).cuda()
+
+    # Warmup
+    for _ in range(3):
+        forward_original(attn, hidden_states, attention_mask=attention_mask2)
+        forward(attn, hidden_states, attention_mask=attention_mask1)
+
+    # Timing original
+    torch.cuda.synchronize()
+    t0 = time.time()
+    for _ in range(20):
+        out1 = forward_original(attn, hidden_states, attention_mask=attention_mask2)
+    torch.cuda.synchronize()
+    t1 = time.time()
+
+    # Timing flash attention
+    torch.cuda.synchronize()
+    t2 = time.time()
+    for _ in range(20):
+        out2 = forward(attn, hidden_states, attention_mask=attention_mask1)
+    torch.cuda.synchronize()
+    t3 = time.time()
+
+    # no bfloat16, float32
+    torch.cuda.synchronize()
+    t4 = time.time()
+    for _ in range(20):
+        out2 = forward(attn, hidden_states, attention_mask=attention_mask1, bfloat16=False)
+    torch.cuda.synchronize()
+    t5 = time.time()
+
+    print(f"Original ESM attention avg time: {(t1-t0)/20:.6f} sec")
+    print(f"FlashAttention avg time: {(t3-t2)/20:.6f} sec")
+    print(f"FlashAttention avg time float16: {(t5-t4)/20:.6f} sec")
+
+    # Check correctness (up to numerical precision)
+    diff = (out1[0].float() - out2[0].float()).abs().mean().item()
+    print(f"Mean absolute difference between outputs: {diff:.6f}")

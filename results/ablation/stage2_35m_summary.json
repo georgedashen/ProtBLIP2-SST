@@ -1,0 +1,38 @@
+{
+  "galactica_zero_shot_marker_aa": {
+    "dataset0/acc": 0.0,
+    "dataset0/bleu2": 1.9426,
+    "dataset0/bleu4": 0.579,
+    "dataset0/rouge_1": 7.3259,
+    "dataset0/rouge_2": 1.8934,
+    "dataset0/rouge_l": 6.198,
+    "dataset0/meteor_score": 5.1128
+  },
+  "lora_raw_aa": {
+    "dataset0/acc": 24.43,
+    "dataset0/bleu2": 40.7201,
+    "dataset0/bleu4": 37.1487,
+    "dataset0/rouge_1": 54.6722,
+    "dataset0/rouge_2": 46.4891,
+    "dataset0/rouge_l": 53.0494,
+    "dataset0/meteor_score": 57.3982
+  },
+  "lora_marker_aa": {
+    "dataset0/acc": 24.22,
+    "dataset0/bleu2": 40.5369,
+    "dataset0/bleu4": 36.9688,
+    "dataset0/rouge_1": 54.6045,
+    "dataset0/rouge_2": 46.4087,
+    "dataset0/rouge_l": 53.0135,
+    "dataset0/meteor_score": 57.1602
+  },
+  "esm2_hidden_no_qformer": {
+    "dataset0/acc": 30.92,
+    "dataset0/bleu2": 46.5526,
+    "dataset0/bleu4": 43.6635,
+    "dataset0/rouge_1": 64.1277,
+    "dataset0/rouge_2": 57.9002,
+    "dataset0/rouge_l": 62.9102,
+    "dataset0/meteor_score": 64.5117
+  }
+}

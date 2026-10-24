@@ -17,6 +17,8 @@ from opendelta import LoraModel
 from opendelta.delta_models.lora import LoraConfig as DeltaLoraConfig
 from transformers import BertTokenizer, BitsAndBytesConfig
 from model.help_funcs import hf_enable_gradient_checkpointing
+from model.hf_local import hf_from_pretrained_kwargs
+from model.plm_encode import encode_prot_hidden
 # from peft.tuners.lora import LoraLayer
 # from peft import (
 #     prepare_model_for_kbit_training,
@@ -164,7 +166,8 @@ class Blip2OPT(Blip2Base):
 
 
     def load_llm(self, llm_model, load_4bit=False, enable_gradient_checkpointing=True):
-        llm_tokenizer = AutoTokenizer.from_pretrained(llm_model, use_fast=False, padding_side='right')
+        hf_kw = hf_from_pretrained_kwargs(llm_model)
+        llm_tokenizer = AutoTokenizer.from_pretrained(llm_model, use_fast=False, padding_side='right', **hf_kw)
         llm_tokenizer.add_special_tokens({'pad_token': '<pad>'})
         if load_4bit:
             quant_config = BitsAndBytesConfig(
@@ -190,11 +193,12 @@ class Blip2OPT(Blip2Base):
                 load_in_8bit=False,
                 device_map=device_map,
                 torch_dtype=torch.bfloat16,
+                **hf_kw,
             )
             llm_model.resize_token_embeddings(len(llm_tokenizer)) ## this will cause bug when 
             llm_model = prepare_model_for_kbit_training(llm_model, use_gradient_checkpointing=True)
         else:
-            llm_model = OPTForCausalLM.from_pretrained(llm_model, torch_dtype=torch.bfloat16)
+            llm_model = OPTForCausalLM.from_pretrained(llm_model, torch_dtype=torch.bfloat16, **hf_kw)
             llm_model.resize_token_embeddings(len(llm_tokenizer)) ## this will cause bug when 
             if enable_gradient_checkpointing:
                 llm_model = hf_enable_gradient_checkpointing(llm_model)
@@ -202,17 +206,15 @@ class Blip2OPT(Blip2Base):
 
     def forward(self, batch):
         prot_batch, text_batch = batch
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = prot_embeds.last_hidden_state
-        if self.plm_tune == 'freeze':
-            prot_embeds = prot_embeds.detach()
-        prot_embeds = self.ln_layer(prot_embeds)
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
         device = prot_embeds.device
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             return_dict=True,
         )
         prot_tokens = self.opt_proj(query_output.last_hidden_state)
@@ -238,17 +240,15 @@ class Blip2OPT(Blip2Base):
 
     def forwardv3(self, batch):
         prot_batch, prompt_batch, text_batch = batch
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = prot_embeds.last_hidden_state
-        if self.plm_tune == 'freeze':
-            prot_embeds = prot_embeds.detach()
-        prot_embeds = self.ln_layer(prot_embeds)
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
         device = prot_embeds.device
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             return_dict=True,
         )
         prot_tokens = self.opt_proj(query_output.last_hidden_state)
@@ -274,17 +274,15 @@ class Blip2OPT(Blip2Base):
 
     def forwardv2(self, batch):
         prot_batch, prompt_batch, text_batch = batch
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = prot_embeds.last_hidden_state
-        if self.plm_tune == 'freeze':
-            prot_embeds = prot_embeds.detach()
-        prot_embeds = self.ln_layer(prot_embeds)
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
         device = prot_embeds.device
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             return_dict=True,
         )
         prot_tokens = self.opt_proj(query_output.last_hidden_state)
@@ -349,14 +347,15 @@ class Blip2OPT(Blip2Base):
         prompt_batch = samples['prompt_batch']
         
         # with self.maybe_autocast():
-        prot_embeds = self.plm(**prot_batch, return_dict=True)
-        prot_embeds = self.ln_layer(prot_embeds.last_hidden_state)
+        prot_embeds, prot_mask = encode_prot_hidden(
+            self.plm, self.ln_layer, prot_batch, self.plm_tune, is_saprot=False
+        )
 
         query_tokens = self.query_tokens.expand(prot_embeds.shape[0], -1, -1)
         query_output = self.Qformer.bert(
             query_embeds=query_tokens,
             encoder_hidden_states=prot_embeds,
-            encoder_attention_mask=prot_batch.attention_mask,
+            encoder_attention_mask=prot_mask,
             return_dict=True,
         )
         prot_tokens = self.opt_proj(query_output.last_hidden_state)

@@ -6,6 +6,22 @@ from tqdm import tqdm
 import numpy as np
 
 
+def round_metric(value, ndigits=2):
+    return round(float(value), ndigits)
+
+
+def flatten_caption_field(result_list, key):
+    """Flatten per-batch or per-sample caption dicts from gather_dict_results."""
+    values = []
+    for item in result_list:
+        field = item[key]
+        if isinstance(field, (list, tuple)):
+            values.extend(field)
+        else:
+            values.append(field)
+    return values
+
+
 def caption_evaluate(predictions, targets, tokenizer, text_trunc_length):
     targets = [t.strip() for t in targets]
     meteor_scores = []
@@ -38,10 +54,11 @@ def caption_evaluate(predictions, targets, tokenizer, text_trunc_length):
     bleu2 *= 100
     bleu4 *= 100
 
+    bleu2 = round_metric(bleu2)
+    bleu4 = round_metric(bleu4)
     print('BLEU-2 score:', bleu2)
     print('BLEU-4 score:', bleu4)
-    _meteor_score = np.mean(meteor_scores)
-    _meteor_score *= 100
+    _meteor_score = round_metric(np.mean(meteor_scores) * 100)
     print('Average Meteor score:', _meteor_score)
 
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'])
@@ -56,9 +73,9 @@ def caption_evaluate(predictions, targets, tokenizer, text_trunc_length):
         rouge_scores.append(rs)
 
     print('ROUGE score:')
-    rouge_1 = np.mean([rs['rouge1'].fmeasure for rs in rouge_scores]) * 100
-    rouge_2 = np.mean([rs['rouge2'].fmeasure for rs in rouge_scores]) * 100
-    rouge_l = np.mean([rs['rougeL'].fmeasure for rs in rouge_scores]) * 100
+    rouge_1 = round_metric(np.mean([rs['rouge1'].fmeasure for rs in rouge_scores]) * 100)
+    rouge_2 = round_metric(np.mean([rs['rouge2'].fmeasure for rs in rouge_scores]) * 100)
+    rouge_l = round_metric(np.mean([rs['rougeL'].fmeasure for rs in rouge_scores]) * 100)
     print('rouge1:', rouge_1)
     print('rouge2:', rouge_2)
     print('rougeL:', rouge_l)

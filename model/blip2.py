@@ -11,6 +11,10 @@ from lavis.models.base_model import BaseModel
 from lavis.models.blip2_models.Qformer import BertConfig, BertLMHeadModel
 from transformers import BertTokenizer, BitsAndBytesConfig
 from transformers import EsmTokenizer, EsmModel
+from transformers import T5Tokenizer, T5EncoderModel
+from transformers import AutoTokenizer, AutoModel
+from model.esm_flash_attention import replace_esm_attn_with_flash_attn
+from model.hf_local import hf_from_pretrained_kwargs
     
 
 def get_gpu_memory(device=0):
@@ -33,32 +37,45 @@ class Blip2Base(BaseModel):
 
     @classmethod
     def init_Qformer(cls, model_name, num_query_token, plm_width, cross_attention_freq=2):
-        assert model_name == 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract'
-        print("bert load microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract")
+        #assert model_name == 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract'
+        #print("bert load microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract")
         
-        encoder_config = BertConfig.from_pretrained(model_name)
+        encoder_config = BertConfig.from_pretrained(model_name, **hf_from_pretrained_kwargs(model_name))
         encoder_config.encoder_width = plm_width
         # insert cross-attention layer every other block
         encoder_config.add_cross_attention = True
         encoder_config.cross_attention_freq = cross_attention_freq
         encoder_config.query_length = num_query_token
         
-        Qformer = BertLMHeadModel.from_pretrained(model_name, config=encoder_config)
+        Qformer = BertLMHeadModel.from_pretrained(model_name, config=encoder_config, **hf_from_pretrained_kwargs(model_name))
         query_tokens = nn.Parameter(
             torch.zeros(1, num_query_token, encoder_config.hidden_size)
         )
         query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range)
 
-        tokenizer = BertTokenizer.from_pretrained(model_name)
+        tokenizer = BertTokenizer.from_pretrained(model_name, **hf_from_pretrained_kwargs(model_name))
         tokenizer.add_special_tokens({"bos_token": "[DEC]"})
         return tokenizer, Qformer, query_tokens
     
 
     def init_protein_encoder(self, plm_name, load_4bit=False):
-        assert plm_name.startswith('facebook/esm2')
-        plm_tokenizer = EsmTokenizer.from_pretrained(plm_name)
+        #assert plm_name.startswith('facebook/esm2')
+        hf_kw = hf_from_pretrained_kwargs(plm_name)
+        if 'esm' in plm_name.lower():
+            plm_tokenizer = EsmTokenizer.from_pretrained(plm_name, trust_remote_code=True, **hf_kw)
+        elif 't5' in plm_name.lower():
+            plm_tokenizer = T5Tokenizer.from_pretrained(plm_name, do_lower_case=False, trust_remote_code=True, **hf_kw)
+        else:
+            plm_tokenizer = AutoTokenizer.from_pretrained(plm_name, trust_remote_code=True, **hf_kw)
         if not load_4bit:
-            plm = EsmModel.from_pretrained(plm_name, add_pooling_layer=False, torch_dtype=torch.bfloat16)
+            if 'esm' in plm_name.lower():
+                plm = EsmModel.from_pretrained(plm_name, add_pooling_layer=False, torch_dtype=torch.bfloat16, trust_remote_code=True, **hf_kw)
+                replace_esm_attn_with_flash_attn()
+            elif 't5' in plm_name.lower():
+                plm = T5EncoderModel.from_pretrained(plm_name, torch_dtype=torch.bfloat16, trust_remote_code=True, **hf_kw)
+                plm = plm.half()
+            else:
+                plm = AutoModel.from_pretrained(plm_name, torch_dtype=torch.bfloat16, trust_remote_code=True, **hf_kw)
         else:
             quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -70,12 +87,12 @@ class Blip2Base(BaseModel):
                 bnb_4bit_quant_type='nf4',
             )
             ## give a device map that assign all layers to device 0
-            outputs = get_gpu_memory(6)
+            outputs = get_gpu_memory(0)
             used_memory = outputs[1]
             if used_memory > 1:
-                device_map = {"": 7}
+                device_map = {"": 1}
             else:
-                device_map = {"": 6}
+                device_map = {"": 0}
             plm = EsmModel.from_pretrained(
                 plm_name, 
                 add_pooling_layer=False,
@@ -84,7 +101,9 @@ class Blip2Base(BaseModel):
                 load_in_8bit=False,
                 device_map=device_map,
                 torch_dtype=torch.bfloat16,
+                **hf_kw,
             )
+            replace_esm_attn_with_flash_attn()
 
         plm.num_features = plm.config.hidden_size
         ln_layer = nn.LayerNorm(plm.num_features)

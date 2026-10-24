@@ -9,11 +9,12 @@ import warnings
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, strategies
 import pytorch_lightning.callbacks as plc
-from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger, TensorBoardLogger
 from data_provider.stage2_dm import Stage2DM, Stage2MixDM
 from data_provider.prot_qa_dm import ProtQADM
 from model.blip2_stage2 import Blip2Stage2
 from model.dist_funs import MyDeepSpeedStrategy
+from model.hf_local import configure_hf_offline_if_cached
 from pathlib import Path
 
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -48,11 +49,17 @@ def main(args):
         else:
             dm = Stage2DM(args.root, args)
     dm.init_tokenizer(model.blip2.llm_tokenizer, model.blip2.plm_tokenizer)
-    
+    if hasattr(dm, 'prepare_plm_embed_cache'):
+        dm.prepare_plm_embed_cache(model.blip2.plm, is_saprot=False)
+
+    log_dir = Path(f'all_checkpoints/{args.filename}')
+    log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"checkpoints and logs -> {log_dir}")
+
     callbacks = []
     ## fixme save only used parameters
     # callbacks.append(plc.ModelCheckpoint(dirpath="all_checkpoints/"+args.filename+"/", every_n_epochs=10, save_top_k=-1))
-    callbacks.append(plc.ModelCheckpoint(dirpath="all_checkpoints/"+args.filename+"/", 
+    callbacks.append(plc.ModelCheckpoint(dirpath=str(log_dir),
                                          filename='{epoch:02d}', 
                                          every_n_epochs=args.save_every_n_epochs, 
                                          save_last=True, 
@@ -65,28 +72,40 @@ def main(args):
         elif args.strategy == 'deepspeed':
             strategy = MyDeepSpeedStrategy(stage=2)
         else:
-            NotImplementedError()
+            raise NotImplementedError()
     else:
         strategy = None
-        args.devices = eval(args.devices)
+        if ',' in args.devices:
+            args.devices = [int(d) for d in args.devices.split(',')]
+        else:
+            args.devices = [int(args.devices)]
     if args.use_wandb_logger:
-        Path(f'./all_checkpoints/{args.filename}/wandb').mkdir(parents=True, exist_ok=True)
-        logger = WandbLogger(project=args.filename, save_dir=f'./all_checkpoints/{args.filename}/')
+        (log_dir / 'wandb').mkdir(parents=True, exist_ok=True)
+        logger = WandbLogger(project=args.filename, save_dir=str(log_dir))
+    elif args.use_tb_logger:
+        tb_dir = log_dir / 'tb_logs'
+        tb_dir.mkdir(parents=True, exist_ok=True)
+        logger = [
+            CSVLogger(save_dir=str(log_dir)),
+            TensorBoardLogger(save_dir=str(tb_dir)),
+        ]
+        # tensorboard --logdir all_checkpoints/<filename>/tb_logs
     else:
-        logger = CSVLogger(save_dir=f'./all_checkpoints/{args.filename}/')
-    trainer = Trainer(
+        logger = CSVLogger(save_dir=str(log_dir))
+    trainer_kwargs = dict(
         accelerator=args.accelerator,
         devices=args.devices,
         precision=args.precision,
         max_epochs=args.max_epochs,
         accumulate_grad_batches=args.accumulate_grad_batches,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
+        log_every_n_steps=args.log_every_n_steps,
         callbacks=callbacks,
-        strategy=strategy,
         logger=logger,
-        # limit_train_batches=2,
-        # limit_val_batches=2,
     )
+    if strategy is not None:
+        trainer_kwargs['strategy'] = strategy
+    trainer = Trainer(**trainer_kwargs)
     if args.mode == 'train':
         trainer.fit(model, datamodule=dm)#, ckpt_path=args.ckpt_path)
     elif args.mode == 'eval':
@@ -109,12 +128,16 @@ def get_args():
     parser.add_argument('--max_epochs', type=int, default=10)
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     parser.add_argument('--check_val_every_n_epoch', type=int, default=1)
+    parser.add_argument('--log_every_n_steps', type=int, default=50)
     parser.add_argument('--enable_flash', action='store_true', default=False)
     parser.add_argument('--use_wandb_logger', action='store_true', default=False)
+    parser.add_argument('--use_tb_logger', action='store_true', default=False)
     parser.add_argument('--mix_dataset', action='store_true', default=False)
+    parser.add_argument('--suffix', type=str, default='', help='custom dataset suffix (e.g. _afdbfilt)')
     parser = Blip2Stage2.add_model_specific_args(parser)  # add model args
     parser = Stage2DM.add_model_specific_args(parser)
     args = parser.parse_args()
+    configure_hf_offline_if_cached(args.plm_model, args.llm_name, args.bert_name)
 
     if args.enable_flash:
         replace_opt_attn_with_flash_attn()
